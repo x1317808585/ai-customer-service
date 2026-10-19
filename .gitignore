@@ -1,0 +1,10 @@
+# 密钥和本地配置
+.env
+
+# Python
+__pycache__/
+.venv/
+
+# 前端
+node_modules/
+.next/
