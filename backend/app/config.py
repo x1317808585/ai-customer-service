@@ -1,20 +1,46 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal, Self
 
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
+LlmProvider = Literal["fake", "openai_compatible"]
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ROOT_DIR / ".env",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
 
     postgres_user: str
     postgres_password: str
     postgres_db: str
     postgres_host: str = "localhost"
     postgres_port: int = 5432
+
+    llm_provider: LlmProvider = "fake"
+    llm_base_url: str = ""
+    llm_api_key: SecretStr = SecretStr("")
+    llm_model: str = ""
+
+    @model_validator(mode="after")
+    def require_settings_for_real_llm(self) -> Self:
+        if self.llm_provider == "openai_compatible":
+            required = {
+                "LLM_BASE_URL": self.llm_base_url,
+                "LLM_API_KEY": self.llm_api_key.get_secret_value(),
+                "LLM_MODEL": self.llm_model,
+            }
+            missing = [name for name, value in required.items() if not value.strip()]
+            if missing:
+                raise ValueError(f"LLM_PROVIDER=openai_compatible 时缺少配置：{', '.join(missing)}")
+        return self
 
     @property
     def database_url(self) -> URL:
