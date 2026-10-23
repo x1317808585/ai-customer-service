@@ -19,3 +19,7 @@ _Avoid_: chat record, utterance
 **Assistant（助手）**:
 系统中代表 AI 客服发言的一方。
 _Avoid_: bot, agent（agent 专指后端的编排程序）
+
+**Reply（回复）**:
+助手针对一条用户消息生成的消息。生成过程中逐段送达，完整生成后才作为消息保存。
+_Avoid_: answer, response

@@ -1,16 +1,56 @@
-from fastapi import FastAPI, HTTPException, status
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from langchain_core.language_models import BaseChatModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.agent.chat_graph import build_chat_graph
+from app.agent.llm import create_chat_model
+from app.api.conversations import router as conversations_router
+from app.config import Settings, get_settings
+from app.conversations import ConversationNotFoundError, ConversationService
 from app.database import SessionDep
 
-app = FastAPI(title="AI 客服")
+
+def create_app(
+    settings: Settings | None = None, chat_model: BaseChatModel | None = None
+) -> FastAPI:
+    """创建 FastAPI 应用。测试可以传入自己的配置和模型；不传时在启动阶段读取 .env。"""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app_settings = settings or get_settings()
+        engine = create_async_engine(app_settings.database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        chat_graph = build_chat_graph(chat_model or create_chat_model(app_settings))
+
+        app.state.session_factory = session_factory
+        app.state.conversation_service = ConversationService(session_factory, chat_graph)
+        yield
+        await engine.dispose()
+
+    app = FastAPI(title="AI 客服", lifespan=lifespan)
+    app.include_router(conversations_router)
+
+    @app.exception_handler(ConversationNotFoundError)
+    async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": "会话不存在"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    @app.get("/health")
+    async def health(session: SessionDep) -> dict[str, str]:
+        try:
+            await session.execute(text("SELECT 1"))
+        except (SQLAlchemyError, OSError) as error:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "database unavailable"
+            ) from error
+        return {"status": "ok"}
+
+    return app
 
 
-@app.get("/health")
-async def health(session: SessionDep) -> dict[str, str]:
-    try:
-        await session.execute(text("SELECT 1"))
-    except (SQLAlchemyError, OSError) as error:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "database unavailable") from error
-    return {"status": "ok"}
+app = create_app()
