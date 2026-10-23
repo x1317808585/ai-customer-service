@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   createConversation,
+  describeError,
+  isUnauthorized,
   listConversations,
   listMessages,
   sendMessage,
@@ -43,6 +45,15 @@ export function useChat() {
   const replyRequest = useRef<AbortController | null>(null);
   const stopRequested = useRef(false);
 
+  /** 登录过期时整页跳到登录页（清掉页面上的全部数据）；其他错误显示在页面顶部。 */
+  const handleError = useCallback((error: unknown) => {
+    if (isUnauthorized(error)) {
+      window.location.replace("/login");
+      return;
+    }
+    setNotice(describeError(error));
+  }, []);
+
   /** 重新读取会话列表。只采用最新一次请求的结果，旧请求晚到时直接丢弃。 */
   const refreshConversations = useCallback(async (): Promise<Conversation[] | null> => {
     const requestId = ++latestListRequest.current;
@@ -52,10 +63,10 @@ export function useChat() {
       setConversations(list);
       return list;
     } catch (error) {
-      setNotice(describeError(error));
+      handleError(error);
       return null;
     }
-  }, []);
+  }, [handleError]);
 
   /**
    * 读取历史并替换当前显示的消息，返回是否成功。
@@ -70,10 +81,10 @@ export function useChat() {
       setMessages(history.map(toDisplayMessage));
       return true;
     } catch (error) {
-      if (!controller.signal.aborted) setNotice(describeError(error));
+      if (!controller.signal.aborted) handleError(error);
       return false;
     }
-  }, []);
+  }, [handleError]);
 
   /** 切换到某个会话（或 null 表示还没有会话），清空当前显示的内容。 */
   const activate = useCallback((conversationId: number | null) => {
@@ -112,12 +123,12 @@ export function useChat() {
       void refreshConversations();
       return conversation.id;
     } catch (error) {
-      setNotice(describeError(error));
+      handleError(error);
       return null;
     } finally {
       setCreating(false);
     }
-  }, [activate, refreshConversations]);
+  }, [activate, refreshConversations, handleError]);
 
   const startNewConversation = useCallback(async () => {
     if (!replying && !creating) await openNewConversation();
@@ -168,7 +179,7 @@ export function useChat() {
       } catch (error) {
         if (error instanceof ApiError) {
           setMessages((previous) => previous.slice(0, -2));
-          setNotice(error.message);
+          handleError(error);
           return false;
         }
         outcome = stopRequested.current ? "stopped" : "interrupted";
@@ -187,7 +198,7 @@ export function useChat() {
       }
       return true;
     },
-    [replying, creating, activeId, openNewConversation, refreshConversations, loadHistory],
+    [replying, creating, activeId, openNewConversation, refreshConversations, loadHistory, handleError],
   );
 
   const stop = useCallback(() => {
@@ -216,10 +227,4 @@ function toDisplayMessage(message: ChatMessage): DisplayMessage {
     content: message.content,
     streaming: false,
   };
-}
-
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
-  if (error instanceof TypeError) return "无法连接服务器，请确认后端已启动。";
-  return error instanceof Error ? error.message : "发生未知错误，请刷新页面重试。";
 }

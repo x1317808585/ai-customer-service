@@ -1,36 +1,16 @@
 "use client";
 
-import { ConversationSidebar } from "@/components/ConversationSidebar";
-import { MessageComposer } from "@/components/MessageComposer";
-import { MessageList } from "@/components/MessageList";
-import { useChat } from "@/hooks/useChat";
+import { ChatScreen } from "@/components/ChatScreen";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 export default function ChatPage() {
-  const chat = useChat();
+  const { user, error, logOut } = useCurrentUser();
 
-  return (
-    <main className="flex h-screen">
-      <ConversationSidebar
-        conversations={chat.conversations}
-        activeId={chat.activeId}
-        disabled={chat.busy}
-        onSelect={chat.selectConversation}
-        onCreate={chat.startNewConversation}
-      />
-      <section className="flex min-w-0 flex-1 flex-col">
-        {chat.notice && (
-          <p role="status" className="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-800">
-            {chat.notice}
-          </p>
-        )}
-        <MessageList messages={chat.messages} />
-        <MessageComposer
-          busy={chat.busy}
-          replying={chat.replying}
-          onSend={chat.send}
-          onStop={chat.stop}
-        />
-      </section>
-    </main>
-  );
+  if (error) {
+    return <p role="alert" className="p-6 text-sm text-red-700">{error}</p>;
+  }
+  if (!user) {
+    return null;
+  }
+  return <ChatScreen user={user} onLogOut={logOut} />;
 }
