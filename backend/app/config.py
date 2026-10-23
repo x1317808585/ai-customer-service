@@ -1,8 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
 
     frontend_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    jwt_secret: Annotated[SecretStr, Field(min_length=32)]
+    access_token_minutes: int = 480
+    cookie_secure: bool = False
 
     llm_provider: LlmProvider = "fake"
     llm_base_url: str = ""

@@ -23,6 +23,7 @@ def make_settings(**llm_settings: str) -> Settings:
         postgres_user="test",
         postgres_password="test",
         postgres_db="test",
+        jwt_secret="test-jwt-secret-that-is-at-least-32-chars",
         **llm_settings,
     )
 

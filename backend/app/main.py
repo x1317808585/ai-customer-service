@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.chat_graph import build_chat_graph
 from app.agent.llm import create_chat_model
+from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
+from app.api.trusted_origin import TrustedOriginMiddleware
 from app.config import Settings, get_settings
 from app.conversations import (
     ConversationBusyError,
@@ -39,12 +41,16 @@ def create_app(
         await engine.dispose()
 
     app = FastAPI(title="AI 客服", lifespan=lifespan)
+    app.state.settings = app_settings
+    app.add_middleware(TrustedOriginMiddleware, trusted_origins=app_settings.frontend_origins)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.frontend_origins,
+        allow_credentials=True,
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type"],
     )
+    app.include_router(auth_router)
     app.include_router(conversations_router)
 
     @app.exception_handler(ConversationNotFoundError)

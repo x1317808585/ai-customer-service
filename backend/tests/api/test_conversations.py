@@ -1,23 +1,19 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import pytest
-import uvicorn
 from httpx import AsyncClient
 from langchain_core.messages import AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import Field
 
 from app.agent.llm import OfflineChatModel
-from app.api.dependencies import get_current_user
-from app.config import Settings
-from app.main import create_app
-from app.models import User
 
 OpenClient = Callable[..., AbstractAsyncContextManager[AsyncClient]]
+OpenServer = Callable[[OfflineChatModel], AbstractAsyncContextManager[AsyncClient]]
 SseEvent = tuple[str, dict[str, Any]]
 
 
@@ -94,27 +90,6 @@ async def get_history(client: AsyncClient, conversation_id: int) -> list[dict[st
 async def get_title(client: AsyncClient, conversation_id: int) -> str:
     conversations = (await client.get("/api/conversations")).json()
     return next(c["title"] for c in conversations if c["id"] == conversation_id)
-
-
-@asynccontextmanager
-async def running_server(
-    settings: Settings, user: User, model: GatedChatModel
-) -> AsyncIterator[AsyncClient]:
-    """启动一个真正的 uvicorn 服务器，返回连接它的客户端。结束时打开闸门并关闭服务器。"""
-    app = create_app(settings, model)
-    app.dependency_overrides[get_current_user] = lambda: user
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
-    server_task = asyncio.create_task(server.serve())
-    try:
-        while not server.started:
-            await asyncio.sleep(0.01)
-        port = server.servers[0].sockets[0].getsockname()[1]
-        async with AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
-            yield client
-    finally:
-        model.gate.set()
-        server.should_exit = True
-        await server_task
 
 
 # ---------- 会话 ----------
@@ -278,10 +253,10 @@ async def test_second_message_while_replying_is_rejected_and_writes_nothing(
 
 
 async def test_first_chunk_reaches_client_over_real_http_before_generation_finishes(
-    test_settings: Settings, users: dict[str, User]
+    open_server: OpenServer,
 ) -> None:
     model = GatedChatModel(chunk_delay_seconds=0)
-    async with running_server(test_settings, users["alice"], model) as client:
+    async with open_server(model) as client:
         conversation_id = await create_conversation(client)
         async with asyncio.timeout(5):
             async with client.stream(
@@ -301,10 +276,10 @@ async def test_first_chunk_reaches_client_over_real_http_before_generation_finis
 
 
 async def test_client_disconnect_saves_no_partial_reply_and_frees_conversation(
-    test_settings: Settings, users: dict[str, User]
+    open_server: OpenServer,
 ) -> None:
     model = GatedChatModel(chunk_delay_seconds=0)
-    async with running_server(test_settings, users["alice"], model) as client:
+    async with open_server(model) as client:
         conversation_id = await create_conversation(client)
         async with asyncio.timeout(5):
             async with client.stream(
