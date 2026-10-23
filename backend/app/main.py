@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langchain_core.language_models import BaseChatModel
 from sqlalchemy import text
@@ -23,11 +24,11 @@ from app.database import SessionDep
 def create_app(
     settings: Settings | None = None, chat_model: BaseChatModel | None = None
 ) -> FastAPI:
-    """创建 FastAPI 应用。测试可以传入自己的配置和模型；不传时在启动阶段读取 .env。"""
+    """创建 FastAPI 应用。测试可以传入自己的配置和模型；不传时读取 .env。"""
+    app_settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app_settings = settings or get_settings()
         engine = create_async_engine(app_settings.database_url, pool_pre_ping=True)
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         chat_graph = build_chat_graph(chat_model or create_chat_model(app_settings))
@@ -38,6 +39,12 @@ def create_app(
         await engine.dispose()
 
     app = FastAPI(title="AI 客服", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=app_settings.frontend_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
     app.include_router(conversations_router)
 
     @app.exception_handler(ConversationNotFoundError)

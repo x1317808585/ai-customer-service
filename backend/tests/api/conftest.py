@@ -13,14 +13,19 @@ from app.main import create_app
 from app.models import Base, User
 
 TEST_DATABASE = "customer_service_test"
+ALLOWED_FRONTEND_ORIGIN = "http://localhost:3000"
 
 OpenClient = Callable[..., AbstractAsyncContextManager[AsyncClient]]
 
 
 @pytest.fixture
 def test_settings() -> Settings:
-    """数据库账号沿用 .env，库名换成测试库；模型固定用离线模型。"""
-    return Settings(postgres_db=TEST_DATABASE, llm_provider="fake")
+    """数据库账号沿用 .env，库名换成测试库；模型和允许跨域的前端地址都固定下来。"""
+    return Settings(
+        postgres_db=TEST_DATABASE,
+        llm_provider="fake",
+        frontend_origins=[ALLOWED_FRONTEND_ORIGIN],
+    )
 
 
 @pytest.fixture

@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
 
+    frontend_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
     llm_provider: LlmProvider = "fake"
     llm_base_url: str = ""
     llm_api_key: SecretStr = SecretStr("")

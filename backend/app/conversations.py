@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langgraph.graph.state import CompiledStateGraph
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Conversation, Message
@@ -14,6 +14,7 @@ from app.models import Conversation, Message
 logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "新会话"
+TITLE_MAX_LENGTH = 20
 HISTORY_MESSAGE_LIMIT = 20
 
 ReplyEventType = Literal["message.accepted", "message.delta", "message.done", "error"]
@@ -94,6 +95,9 @@ class ConversationService:
 
         with self._replying_to(conversation_id):
             async with self._session_factory() as session:
+                if not await _has_messages(session, conversation_id):
+                    conversation = await session.get_one(Conversation, conversation_id)
+                    conversation.title = content[:TITLE_MAX_LENGTH]
                 user_message = Message(conversation_id=conversation_id, role="user", content=content)
                 session.add(user_message)
                 await session.commit()
@@ -139,6 +143,10 @@ async def _get_owned_conversation(
     if conversation is None or conversation.user_id != user_id:
         raise ConversationNotFoundError
     return conversation
+
+
+async def _has_messages(session: AsyncSession, conversation_id: int) -> bool:
+    return bool(await session.scalar(select(exists().where(Message.conversation_id == conversation_id))))
 
 
 async def _load_recent_history(session: AsyncSession, conversation_id: int) -> list[BaseMessage]:

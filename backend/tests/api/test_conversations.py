@@ -1,7 +1,7 @@
 import asyncio
 import json
-from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
 import pytest
@@ -91,6 +91,32 @@ async def get_history(client: AsyncClient, conversation_id: int) -> list[dict[st
     return response.json()
 
 
+async def get_title(client: AsyncClient, conversation_id: int) -> str:
+    conversations = (await client.get("/api/conversations")).json()
+    return next(c["title"] for c in conversations if c["id"] == conversation_id)
+
+
+@asynccontextmanager
+async def running_server(
+    settings: Settings, user: User, model: GatedChatModel
+) -> AsyncIterator[AsyncClient]:
+    """启动一个真正的 uvicorn 服务器，返回连接它的客户端。结束时打开闸门并关闭服务器。"""
+    app = create_app(settings, model)
+    app.dependency_overrides[get_current_user] = lambda: user
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
+    server_task = asyncio.create_task(server.serve())
+    try:
+        while not server.started:
+            await asyncio.sleep(0.01)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        async with AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            yield client
+    finally:
+        model.gate.set()
+        server.should_exit = True
+        await server_task
+
+
 # ---------- 会话 ----------
 
 
@@ -145,6 +171,24 @@ async def test_history_after_done_has_user_message_then_reply(client: AsyncClien
     ]
 
 
+async def test_first_message_becomes_title_and_later_messages_keep_it(client: AsyncClient) -> None:
+    conversation_id = await create_conversation(client)
+
+    await send_message(client, conversation_id, "请问这款蓝牙耳机支持主动降噪吗？续航大概多久？")
+    await send_message(client, conversation_id, "第二句不应该改变标题")
+
+    assert await get_title(client, conversation_id) == "请问这款蓝牙耳机支持主动降噪吗？续航大概"
+
+
+async def test_title_is_kept_even_when_first_message_equals_default_title(client: AsyncClient) -> None:
+    conversation_id = await create_conversation(client)
+
+    await send_message(client, conversation_id, "新会话")
+    await send_message(client, conversation_id, "第二句不应该改变标题")
+
+    assert await get_title(client, conversation_id) == "新会话"
+
+
 async def test_second_turn_gives_model_previous_turn_in_order(open_client: OpenClient) -> None:
     model = RecordingChatModel(chunk_delay_seconds=0)
     async with open_client(chat_model=model) as client:
@@ -195,12 +239,14 @@ async def test_model_failure_sends_error_and_keeps_only_user_message(
         conversation_id = await create_conversation(client)
         events = await send_message(client, conversation_id, "你好")
         history = await get_history(client, conversation_id)
+        title = await get_title(client, conversation_id)
 
     names = [name for name, _data in events]
     assert names[0] == "message.accepted"
     assert names[-1] == "error"
     assert "message.done" not in names
     assert [(m["role"], m["content"]) for m in history] == [("user", "你好")]
+    assert title == "你好"
 
 
 async def test_second_message_while_replying_is_rejected_and_writes_nothing(
@@ -228,42 +274,59 @@ async def test_second_message_while_replying_is_rejected_and_writes_nothing(
     ]
 
 
-# ---------- 真实 HTTP 流式 ----------
+# ---------- 真实 HTTP ----------
 
 
 async def test_first_chunk_reaches_client_over_real_http_before_generation_finishes(
     test_settings: Settings, users: dict[str, User]
 ) -> None:
     model = GatedChatModel(chunk_delay_seconds=0)
-    app = create_app(test_settings, model)
-    app.dependency_overrides[get_current_user] = lambda: users["alice"]
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning"))
-    server_task = asyncio.create_task(server.serve())
-    while not server.started:
-        await asyncio.sleep(0.01)
-    port = server.servers[0].sockets[0].getsockname()[1]
-
-    try:
-        async with AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
-            conversation_id = await create_conversation(client)
-            async with asyncio.timeout(5):
-                async with client.stream(
-                    "POST",
-                    f"/api/conversations/{conversation_id}/messages",
-                    json={"content": "你好"},
-                ) as response:
-                    lines = response.aiter_lines()
-                    first_delta_received = False
-                    async for line in lines:
-                        if line == "event: message.delta":
-                            first_delta_received = True
-                            break
-                    model.gate.set()
-                    rest = [line async for line in lines]
-    finally:
-        model.gate.set()
-        server.should_exit = True
-        await server_task
+    async with running_server(test_settings, users["alice"], model) as client:
+        conversation_id = await create_conversation(client)
+        async with asyncio.timeout(5):
+            async with client.stream(
+                "POST", f"/api/conversations/{conversation_id}/messages", json={"content": "你好"}
+            ) as response:
+                lines = response.aiter_lines()
+                first_delta_received = False
+                async for line in lines:
+                    if line == "event: message.delta":
+                        first_delta_received = True
+                        break
+                model.gate.set()
+                rest = [line async for line in lines]
 
     assert first_delta_received
     assert "event: message.done" in rest
+
+
+async def test_client_disconnect_saves_no_partial_reply_and_frees_conversation(
+    test_settings: Settings, users: dict[str, User]
+) -> None:
+    model = GatedChatModel(chunk_delay_seconds=0)
+    async with running_server(test_settings, users["alice"], model) as client:
+        conversation_id = await create_conversation(client)
+        async with asyncio.timeout(5):
+            async with client.stream(
+                "POST", f"/api/conversations/{conversation_id}/messages", json={"content": "第一句"}
+            ) as response:
+                async for line in response.aiter_lines():
+                    if line == "event: message.delta":
+                        break
+            model.gate.set()
+
+            while True:
+                retry = await client.post(
+                    f"/api/conversations/{conversation_id}/messages", json={"content": "第二句"}
+                )
+                if retry.status_code != 409:
+                    break
+                await asyncio.sleep(0.05)
+        history = await get_history(client, conversation_id)
+
+    assert retry.status_code == 200
+    assert [(m["role"], m["content"]) for m in history] == [
+        ("user", "第一句"),
+        ("user", "第二句"),
+        ("assistant", "（离线模式）回复"),
+    ]
