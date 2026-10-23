@@ -12,7 +12,11 @@ from app.agent.chat_graph import build_chat_graph
 from app.agent.llm import create_chat_model
 from app.api.conversations import router as conversations_router
 from app.config import Settings, get_settings
-from app.conversations import ConversationNotFoundError, ConversationService
+from app.conversations import (
+    ConversationBusyError,
+    ConversationNotFoundError,
+    ConversationService,
+)
 from app.database import SessionDep
 
 
@@ -39,6 +43,10 @@ def create_app(
     @app.exception_handler(ConversationNotFoundError)
     async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:
         return JSONResponse({"detail": "会话不存在"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    @app.exception_handler(ConversationBusyError)
+    async def conversation_busy(_request: Request, _error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": "上一条回复还在生成中"}, status_code=status.HTTP_409_CONFLICT)
 
     @app.get("/health")
     async def health(session: SessionDep) -> dict[str, str]:
