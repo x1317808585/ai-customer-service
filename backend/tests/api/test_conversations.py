@@ -1,19 +1,26 @@
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from langchain_core.messages import AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import Field
 
 from app.agent.llm import OfflineChatModel
+from app.agent.mcp_toolbox import McpToolbox
+from app.agent.reply_agent import TOOLS_UNAVAILABLE_MESSAGE
+from app.config import Settings
+from app.models import Order, User
+from tests.agent.doubles import FakeToolbox, ScriptedChatModel, blocking_tool, calls_tools
 
 OpenClient = Callable[..., AbstractAsyncContextManager[AsyncClient]]
-OpenServer = Callable[[OfflineChatModel], AbstractAsyncContextManager[AsyncClient]]
+OpenServer = Callable[..., AbstractAsyncContextManager[AsyncClient]]
+AddProduct = Callable[..., Awaitable[int]]
+AddOrder = Callable[..., Awaitable[Order]]
 SseEvent = tuple[str, dict[str, Any]]
 
 
@@ -85,6 +92,17 @@ async def get_history(client: AsyncClient, conversation_id: int) -> list[dict[st
     response = await client.get(f"/api/conversations/{conversation_id}/messages")
     assert response.status_code == 200
     return response.json()
+
+
+def displayed_text(events: list[SseEvent]) -> str:
+    """按前端的规则拼出最终显示的回答：收到 message.discard 就清空重来。"""
+    text = ""
+    for name, data in events:
+        if name == "message.discard":
+            text = ""
+        elif name == "message.delta":
+            text += data["text"]
+    return text
 
 
 async def get_title(client: AsyncClient, conversation_id: int) -> str:
@@ -305,3 +323,106 @@ async def test_client_disconnect_saves_no_partial_reply_and_frees_conversation(
         ("user", "第二句"),
         ("assistant", "（离线模式）回复"),
     ]
+
+
+# ---------- 调用工具（经过真实 MCP Server 和数据库） ----------
+
+
+async def test_order_question_goes_through_mcp_and_only_the_final_answer_is_saved(
+    open_client: OpenClient, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机")
+    order = await add_order(users["alice"].id, earbuds, status="shipped")
+
+    def respond(messages: list[BaseMessage]) -> AIMessage:
+        last = messages[-1]
+        if isinstance(last, ToolMessage):
+            ids = [record["id"] for record in last.artifact["structured_content"]["result"]]
+            return AIMessage(f"你的订单号：{ids}")
+        return calls_tools(("list_my_orders", {}), text="我先查一下")
+
+    async with open_client(chat_model=ScriptedChatModel(respond=respond)) as client:
+        conversation_id = await create_conversation(client)
+        events = await send_message(client, conversation_id, "我的订单到哪了")
+        history = await get_history(client, conversation_id)
+
+    tool_events = [data for name, data in events if name == "tool.status"]
+    assert [(e["tool"], e["status"]) for e in tool_events] == [
+        ("list_my_orders", "running"),
+        ("list_my_orders", "succeeded"),
+    ]
+    assert all(set(e) == {"call_id", "tool", "status"} for e in tool_events)  # 不把参数、令牌发给前端
+    assert "message.discard" in [name for name, _data in events]
+    assert displayed_text(events) == f"你的订单号：[{order.id}]"
+    assert history[-1]["content"] == displayed_text(events)  # 刷新后看到的就是当时显示的
+
+
+async def test_alice_and_bob_asking_together_each_get_only_their_own_orders(
+    open_client: OpenClient, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机")
+    alice_orders = [await add_order(users["alice"].id, earbuds, status="shipped") for _ in range(2)]
+    bob_order = await add_order(users["bob"].id, earbuds, status="placed")
+
+    async def ask(username: str) -> str:
+        async with open_client(as_user=username) as client:
+            conversation_id = await create_conversation(client)
+            return displayed_text(await send_message(client, conversation_id, "查一下我的订单"))
+
+    alice_reply, bob_reply = await asyncio.gather(ask("alice"), ask("bob"))
+
+    newest_first = "、".join(str(order.id) for order in reversed(alice_orders))
+    assert alice_reply == f"（离线模式）查到 2 条订单（编号 {newest_first}）。"
+    assert bob_reply == f"（离线模式）查到 1 条订单（编号 {bob_order.id}）。"
+
+
+async def test_unreachable_mcp_ends_the_reply_with_a_clear_error(
+    open_client: OpenClient, test_settings: Settings
+) -> None:
+    nowhere = test_settings.model_copy(update={"mcp_server_url": "http://127.0.0.1:1/mcp"})
+
+    async with open_client(toolbox=McpToolbox(nowhere)) as client:
+        conversation_id = await create_conversation(client)
+        events = await send_message(client, conversation_id, "你好")
+        history = await get_history(client, conversation_id)
+
+    assert events[-1] == ("error", {"detail": TOOLS_UNAVAILABLE_MESSAGE})
+    assert [(m["role"], m["content"]) for m in history] == [("user", "你好")]
+
+
+async def test_stopping_during_a_tool_call_frees_the_conversation(open_server: OpenServer) -> None:
+    started = asyncio.Event()
+    toolbox = FakeToolbox([blocking_tool("list_my_orders", started)])
+
+    def respond(messages: list[BaseMessage]) -> AIMessage:
+        if messages[-1].text == "查订单":
+            return calls_tools(("list_my_orders", {}))
+        return AIMessage("好的")
+
+    async with open_server(ScriptedChatModel(respond=respond), toolbox) as client:
+        conversation_id = await create_conversation(client)
+        async with asyncio.timeout(5):
+            async with client.stream(
+                "POST", f"/api/conversations/{conversation_id}/messages", json={"content": "查订单"}
+            ) as response:
+                async for line in response.aiter_lines():
+                    if line == "event: tool.status":
+                        break
+            await started.wait()
+
+            while True:
+                retry = await client.post(
+                    f"/api/conversations/{conversation_id}/messages", json={"content": "你好"}
+                )
+                if retry.status_code != 409:
+                    break
+                await asyncio.sleep(0.05)
+        history = await get_history(client, conversation_id)
+
+    assert retry.status_code == 200
+    assert [(m["role"], m["content"]) for m in history] == [
+        ("user", "查订单"),
+        ("user", "你好"),
+        ("assistant", "好的"),
+    ]
+    assert (toolbox.opened, toolbox.closed) == (2, 2)

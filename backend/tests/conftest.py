@@ -1,11 +1,16 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime
 
+import httpx
 import pytest
+from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.agent.mcp_toolbox import McpToolbox
 from app.auth import hash_password
 from app.config import Settings
+from app.mcp_server.main import create_mcp_app
 from app.models import Base, Order, OrderItem, OrderStatus, Product, User
 from tests.constants import (
     ALLOWED_FRONTEND_ORIGIN,
@@ -118,3 +123,27 @@ def add_order(session_factory: async_sessionmaker[AsyncSession]) -> AddOrder:
             return order
 
     return _add_order
+
+
+class InMemoryMcpToolbox:
+    """测试用的工具箱：每次打开时在内存里启动一个真实的 MCP Server（查测试库），用完就关。
+
+    MCP Server 的启动和关闭都发生在 Agent 打开工具箱的那个任务里，
+    这是 MCP 的会话管理器要求的（不允许在一个任务里启动、另一个任务里关闭）。
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    @asynccontextmanager
+    async def open(self, user_id: int) -> AsyncIterator[list[BaseTool]]:
+        mcp_app = create_mcp_app(self._settings)
+        async with mcp_app.router.lifespan_context(mcp_app):
+            toolbox = McpToolbox(self._settings, httpx.ASGITransport(app=mcp_app))
+            async with toolbox.open(user_id) as tools:
+                yield tools
+
+
+@pytest.fixture
+def mcp_toolbox(test_settings: Settings, users: dict[str, User]) -> InMemoryMcpToolbox:
+    return InMemoryMcpToolbox(test_settings)

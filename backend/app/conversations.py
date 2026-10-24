@@ -1,14 +1,15 @@
 import logging
-from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
-from langgraph.graph.state import CompiledStateGraph
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.events import DraftDiscarded, TextDelta, ToolStatus
+from app.agent.reply_agent import ReplyAgent, ReplyFailedError
 from app.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,9 @@ DEFAULT_TITLE = "新会话"
 TITLE_MAX_LENGTH = 20
 HISTORY_MESSAGE_LIMIT = 20
 
-ReplyEventType = Literal["message.accepted", "message.delta", "message.done", "error"]
+ReplyEventType = Literal[
+    "message.accepted", "message.delta", "message.discard", "tool.status", "message.done", "error"
+]
 
 
 @dataclass(frozen=True)
@@ -42,10 +45,10 @@ class ConversationService:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        chat_graph: CompiledStateGraph,
+        reply_agent: ReplyAgent,
     ) -> None:
         self._session_factory = session_factory
-        self._chat_graph = chat_graph
+        self._reply_agent = reply_agent
         self._replying_conversation_ids: set[int] = set()
 
     async def create_conversation(self, user_id: int) -> Conversation:
@@ -89,7 +92,7 @@ class ConversationService:
 
     async def _reply(
         self, user_id: int, conversation_id: int, content: str
-    ) -> AsyncIterator[ReplyEvent]:
+    ) -> AsyncGenerator[ReplyEvent]:
         async with self._session_factory() as session:
             await _get_owned_conversation(session, user_id, conversation_id)
 
@@ -105,18 +108,31 @@ class ConversationService:
             yield ReplyEvent("message.accepted", {"message_id": user_message.id})
 
             try:
+                # 只保存最终回答：被撤回的草稿（模型调用工具前说的话）不算。
+                # aclosing：这里提前结束（比如用户点了停止）时，主动关闭 Agent，让它马上断开 MCP 连接。
                 reply_text = ""
-                async for chunk, _metadata in self._chat_graph.astream(
-                    {"messages": history}, stream_mode="messages"
-                ):
-                    if isinstance(chunk, AIMessageChunk) and chunk.text:
-                        reply_text += chunk.text
-                        yield ReplyEvent("message.delta", {"text": chunk.text})
+                async with aclosing(self._reply_agent.stream_reply(user_id, history)) as agent_events:
+                    async for event in agent_events:
+                        match event:
+                            case TextDelta(text=text):
+                                reply_text += text
+                                yield ReplyEvent("message.delta", {"text": text})
+                            case DraftDiscarded():
+                                reply_text = ""
+                                yield ReplyEvent("message.discard", {})
+                            case ToolStatus(call_id=call_id, tool=tool, status=tool_status):
+                                yield ReplyEvent(
+                                    "tool.status", {"call_id": call_id, "tool": tool, "status": tool_status}
+                                )
 
                 async with self._session_factory() as session:
                     reply = Message(conversation_id=conversation_id, role="assistant", content=reply_text)
                     session.add(reply)
                     await session.commit()
+            except ReplyFailedError as error:
+                logger.warning("会话 %s 的回复没有完成：%s", conversation_id, error)
+                yield ReplyEvent("error", {"detail": str(error)})
+                return
             except Exception:
                 logger.exception("会话 %s 的回复生成或保存失败", conversation_id)
                 yield ReplyEvent("error", {"detail": "回复生成失败，请稍后重试"})
@@ -163,8 +179,9 @@ async def _load_recent_history(session: AsyncSession, conversation_id: int) -> l
 
 
 async def _prepend(
-    first: ReplyEvent, rest: AsyncIterator[ReplyEvent]
+    first: ReplyEvent, rest: AsyncGenerator[ReplyEvent]
 ) -> AsyncIterator[ReplyEvent]:
     yield first
-    async for event in rest:
-        yield event
+    async with aclosing(rest):  # 这里被提前关闭时，把后面的生成器也一起关掉
+        async for event in rest:
+            yield event

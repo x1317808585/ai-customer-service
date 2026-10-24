@@ -1,8 +1,8 @@
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from app.agent.llm import create_chat_model
+from app.agent.llm import OfflineChatModel, create_chat_model
 from app.config import Settings
 from tests.constants import TEST_JWT_SECRET, TEST_MCP_TOKEN_SECRET
 
@@ -64,3 +64,54 @@ def test_openai_compatible_reports_exactly_the_missing_setting(
 def test_unknown_provider_is_rejected() -> None:
     with pytest.raises(ValidationError):
         make_settings(llm_provider="deepseek")
+
+
+# ---------- 离线模型调用工具 ----------
+
+
+def offline_model(*tool_names: str) -> OfflineChatModel:
+    return OfflineChatModel(chunk_delay_seconds=0, tool_names=tool_names)
+
+
+async def test_offline_model_calls_the_matching_query_tool_when_it_has_one() -> None:
+    reply = await offline_model("list_my_orders").ainvoke([HumanMessage("我的订单到哪了")])
+
+    assert [call["name"] for call in reply.tool_calls] == ["list_my_orders"]
+
+
+async def test_offline_model_without_tools_just_echoes() -> None:
+    reply = await offline_model().ainvoke([HumanMessage("我的订单到哪了")])
+
+    assert reply.tool_calls == []
+    assert reply.text == "（离线模式）收到你的消息：我的订单到哪了"
+
+
+@pytest.mark.parametrize(
+    ("structured", "status", "expected"),
+    [
+        ({"result": [{"id": 5}, {"id": 3}]}, "success", "（离线模式）查到 2 条订单（编号 5、3）。"),
+        ({"result": []}, "success", "（离线模式）查到 0 条订单。"),
+        (None, "error", "（离线模式）查询订单失败。"),
+    ],
+    ids=["two-orders", "no-orders", "failed"],
+)
+async def test_offline_model_summarizes_tool_results(
+    structured: dict[str, object] | None, status: str, expected: str
+) -> None:
+    """MCP 工具的结构化结果放在 ToolMessage 的 artifact 里，正文是给模型看的文本块。"""
+    result = ToolMessage(
+        "（给模型看的文本）",
+        tool_call_id="call-1",
+        name="list_my_orders",
+        status=status,
+        artifact={"structured_content": structured} if structured is not None else None,
+    )
+    history = [
+        HumanMessage("我的订单"),
+        AIMessage("", tool_calls=[{"name": "list_my_orders", "args": {}, "id": "call-1"}]),
+        result,
+    ]
+
+    reply = await offline_model("list_my_orders").ainvoke(history)
+
+    assert reply.text == expected

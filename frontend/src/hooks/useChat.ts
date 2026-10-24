@@ -13,6 +13,7 @@ import {
   type ChatMessage,
   type Conversation,
 } from "@/lib/api";
+import { applyReplyEvent, type ToolProgress } from "@/lib/replyDraft";
 import { readSseEvents } from "@/lib/sse";
 
 export type DisplayMessage = {
@@ -20,6 +21,8 @@ export type DisplayMessage = {
   role: "user" | "assistant";
   content: string;
   streaming: boolean;
+  /** 生成过程中的工具调用进度，只在生成期间显示，不会保存。 */
+  tools: ToolProgress[];
 };
 
 type ReplyOutcome = "done" | "failed" | "stopped" | "interrupted";
@@ -147,8 +150,8 @@ export function useChat() {
       const replyKey = `reply-${now}`;
       setMessages((previous) => [
         ...previous,
-        { key: `question-${now}`, role: "user", content: text, streaming: false },
-        { key: replyKey, role: "assistant", content: "", streaming: true },
+        { key: `question-${now}`, role: "user", content: text, streaming: false, tools: [] },
+        { key: replyKey, role: "assistant", content: "", streaming: true, tools: [] },
       ]);
       const updateReply = (change: (message: DisplayMessage) => DisplayMessage) =>
         setMessages((previous) =>
@@ -161,19 +164,24 @@ export function useChat() {
       setReplying(true);
 
       let outcome: ReplyOutcome = "interrupted";
+      let failureDetail: string | null = null;
       try {
         const body = await sendMessage(conversationId, text, controller.signal);
         for await (const event of readSseEvents(body)) {
           if (event.event === "message.accepted") {
             void refreshConversations();
-          } else if (event.event === "message.delta") {
-            const { text: piece } = JSON.parse(event.data) as { text: string };
-            updateReply((message) => ({ ...message, content: message.content + piece }));
           } else if (event.event === "message.done") {
             outcome = "done";
             updateReply((message) => ({ ...message, streaming: false }));
           } else if (event.event === "error") {
             outcome = "failed";
+            failureDetail = (JSON.parse(event.data) as { detail?: string }).detail ?? null;
+          } else {
+            // 正文片段、撤回草稿、工具进度，统一交给 applyReplyEvent 处理
+            updateReply((message) => {
+              const draft = applyReplyEvent({ text: message.content, tools: message.tools }, event);
+              return { ...message, content: draft.text, tools: draft.tools };
+            });
           }
         }
       } catch (error) {
@@ -191,9 +199,9 @@ export function useChat() {
       if (outcome !== "done") {
         setMessages((previous) => previous.filter((message) => message.key !== replyKey));
         const synced = await loadHistory(conversationId);
+        const reason = outcome === "failed" && failureDetail ? `${failureDetail}。` : OUTCOME_NOTICES[outcome];
         setNotice(
-          OUTCOME_NOTICES[outcome] +
-            (synced ? "已显示服务器上保存的记录。" : "暂时无法读取服务器上的记录，请稍后刷新页面。"),
+          reason + (synced ? "已显示服务器上保存的记录。" : "暂时无法读取服务器上的记录，请稍后刷新页面。"),
         );
       }
       return true;
@@ -226,5 +234,6 @@ function toDisplayMessage(message: ChatMessage): DisplayMessage {
     role: message.role,
     content: message.content,
     streaming: false,
+    tools: [],
   };
 }

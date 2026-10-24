@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { DisplayMessage } from "@/hooks/useChat";
+import { describeToolProgress } from "@/lib/replyDraft";
 
 type Props = {
   messages: DisplayMessage[];
@@ -34,6 +35,13 @@ export function MessageList({ messages }: Props) {
               message.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"
             }`}
           >
+            {message.streaming && message.tools.length > 0 && (
+              <ul className="mb-1 space-y-0.5 text-xs text-gray-500">
+                {message.tools.map((tool) => (
+                  <li key={tool.callId}>{describeToolProgress(tool)}</li>
+                ))}
+              </ul>
+            )}
             {message.content}
             {message.streaming && <span className="ml-0.5 animate-pulse">▍</span>}
           </div>

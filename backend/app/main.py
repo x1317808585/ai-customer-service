@@ -9,8 +9,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.agent.chat_graph import build_chat_graph
 from app.agent.llm import create_chat_model
+from app.agent.mcp_toolbox import McpToolbox
+from app.agent.reply_agent import ReplyAgent, Toolbox
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.trusted_origin import TrustedOriginMiddleware
@@ -24,19 +25,23 @@ from app.database import SessionDep
 
 
 def create_app(
-    settings: Settings | None = None, chat_model: BaseChatModel | None = None
+    settings: Settings | None = None,
+    chat_model: BaseChatModel | None = None,
+    toolbox: Toolbox | None = None,
 ) -> FastAPI:
-    """创建 FastAPI 应用。测试可以传入自己的配置和模型；不传时读取 .env。"""
+    """创建 FastAPI 应用。测试可以传入自己的配置、模型和工具箱；不传时读取 .env，连接 MCP Server。"""
     app_settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_async_engine(app_settings.database_url, pool_pre_ping=True)
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        chat_graph = build_chat_graph(chat_model or create_chat_model(app_settings))
+        reply_agent = ReplyAgent(
+            chat_model or create_chat_model(app_settings), toolbox or McpToolbox(app_settings)
+        )
 
         app.state.session_factory = session_factory
-        app.state.conversation_service = ConversationService(session_factory, chat_graph)
+        app.state.conversation_service = ConversationService(session_factory, reply_agent)
         yield
         await engine.dispose()
 
