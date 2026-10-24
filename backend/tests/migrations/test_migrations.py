@@ -7,9 +7,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.config import Settings
+from tests.constants import TEST_DATABASE
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-TEST_DATABASE = "customer_service_test"
 
 
 def run_alembic(*args: str) -> None:
