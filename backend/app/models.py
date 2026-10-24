@@ -7,6 +7,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 UserRole = Literal["customer", "admin"]
 MessageRole = Literal["user", "assistant"]
 OrderStatus = Literal["placed", "shipped", "delivered", "cancelled"]
+ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
+TicketStatus = Literal["open", "closed"]
 
 CreatedAt = Annotated[
     datetime,
@@ -106,3 +108,42 @@ class OrderItem(Base):
     product_name: Mapped[str] = mapped_column(String(100))
     unit_price_cents: Mapped[int]
     quantity: Mapped[int]
+
+
+class ReturnRequest(Base):
+    __tablename__ = "return_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'rejected', 'cancelled')", name="ck_return_requests_status"
+        ),
+        CheckConstraint("quantity > 0", name="ck_return_requests_quantity"),
+        CheckConstraint("refund_cents >= 0", name="ck_return_requests_refund_cents"),
+        CheckConstraint(
+            "(status = 'pending') = (resolved_at IS NULL)", name="ck_return_requests_resolved_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_item_id: Mapped[int] = mapped_column(ForeignKey("order_items.id"), index=True)
+    quantity: Mapped[int]
+    refund_cents: Mapped[int]
+    reason: Mapped[str] = mapped_column(String(500))
+    status: Mapped[ReturnStatus] = mapped_column(String(16))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[CreatedAt]
+
+    order_item: Mapped[OrderItem] = relationship(lazy="raise")
+
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+    __table_args__ = (
+        CheckConstraint("status IN ('open', 'closed')", name="ck_tickets_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
+    summary: Mapped[str] = mapped_column(String(1000))
+    status: Mapped[TicketStatus] = mapped_column(String(16))
+    created_at: Mapped[CreatedAt]
