@@ -9,6 +9,7 @@ dependencies = [
     "langchain-core>=1.7.0",
     "langchain-openai>=1.7.2",
     "langgraph>=1.2.16",
+    "mcp>=1.30,<2",
     "pwdlib[argon2]>=0.3.1",
     "pydantic-settings>=2.16.0",
     "pyjwt>=2.15.1",

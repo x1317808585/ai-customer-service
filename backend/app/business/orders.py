@@ -7,18 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.business.catalog import ProductNotFoundError
+from app.business.errors import BusinessError
 from app.models import Order, OrderItem, OrderStatus, Product
 
 LIST_LIMIT = 20
 
 
-class OrderNotFoundError(Exception):
+class OrderNotFoundError(BusinessError):
     def __init__(self, order_id: int) -> None:
         super().__init__(f"订单 {order_id} 不存在")
         self.order_id = order_id
 
 
-class OutOfStockError(Exception):
+class OutOfStockError(BusinessError):
     def __init__(self, product_name: str, requested: int, available: int) -> None:
         super().__init__(f"「{product_name}」库存不足：需要 {requested} 件，只剩 {available} 件")
         self.product_name = product_name
@@ -26,7 +27,7 @@ class OutOfStockError(Exception):
         self.available = available
 
 
-class InvalidOrderError(Exception):
+class InvalidOrderError(BusinessError):
     """订单内容本身有问题，比如没有商品、同一商品出现两行。"""
 
 
@@ -42,6 +43,7 @@ class OrderLine(BaseModel):
 class OrderItemView(BaseModel):
     model_config = ConfigDict(from_attributes=True, frozen=True)
 
+    id: int
     product_id: int
     product_name: str
     unit_price_cents: int

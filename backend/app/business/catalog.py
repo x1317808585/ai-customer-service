@@ -1,13 +1,13 @@
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
+from app.business.errors import BusinessError
 from app.models import Product
 
 SEARCH_LIMIT = 10
 
 
-class ProductNotFoundError(Exception):
+class ProductNotFoundError(BusinessError):
     def __init__(self, product_id: int) -> None:
         super().__init__(f"商品 {product_id} 不存在")
         self.product_id = product_id

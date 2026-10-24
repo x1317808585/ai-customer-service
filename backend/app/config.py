@@ -30,10 +30,20 @@ class Settings(BaseSettings):
     access_token_minutes: int = 480
     cookie_secure: bool = False
 
+    backend_url: str = "http://localhost:8000"
+    mcp_server_url: str = "http://localhost:8001/mcp"
+    mcp_token_secret: Annotated[SecretStr, Field(min_length=32)]
+
     llm_provider: LlmProvider = "fake"
     llm_base_url: str = ""
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = ""
+
+    @model_validator(mode="after")
+    def require_different_secrets(self) -> Self:
+        if self.jwt_secret.get_secret_value() == self.mcp_token_secret.get_secret_value():
+            raise ValueError("MCP_TOKEN_SECRET 不能和 JWT_SECRET 相同")
+        return self
 
     @model_validator(mode="after")
     def require_settings_for_real_llm(self) -> Self:

@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 from app.agent.llm import create_chat_model
 from app.config import Settings
+from tests.constants import TEST_JWT_SECRET, TEST_MCP_TOKEN_SECRET
 
 LLM_SETTING_NAMES = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
 TEST_API_KEY = "sk-test-secret"
@@ -23,7 +24,8 @@ def make_settings(**llm_settings: str) -> Settings:
         postgres_user="test",
         postgres_password="test",
         postgres_db="test",
-        jwt_secret="test-jwt-secret-that-is-at-least-32-chars",
+        jwt_secret=TEST_JWT_SECRET,
+        mcp_token_secret=TEST_MCP_TOKEN_SECRET,
         **llm_settings,
     )
 

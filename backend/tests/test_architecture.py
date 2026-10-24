@@ -1,5 +1,11 @@
 import ast
+import importlib
+import inspect
+import pkgutil
 from pathlib import Path
+
+import app.business
+from app.business.errors import BusinessError
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 
@@ -20,12 +26,24 @@ def imports_any(modules: set[str], forbidden: str) -> bool:
     return any(module == forbidden or module.startswith(forbidden + ".") for module in modules)
 
 
-def test_business_layer_does_not_depend_on_web_framework_or_api() -> None:
+def test_business_layer_does_not_depend_on_web_framework_api_or_mcp() -> None:
     modules = imported_modules("business")
 
-    for forbidden in ("fastapi", "starlette", "app.api"):
+    for forbidden in ("fastapi", "starlette", "mcp", "app.api", "app.mcp_server"):
         assert not imports_any(modules, forbidden), f"app/business 不应该 import {forbidden}"
 
 
-def test_agent_does_not_call_business_layer_directly() -> None:
-    assert not imports_any(imported_modules("agent"), "app.business")
+def test_agent_reaches_business_data_only_through_mcp() -> None:
+    modules = imported_modules("agent")
+
+    for forbidden in ("app.business", "app.mcp_server"):
+        assert not imports_any(modules, forbidden), f"app/agent 不应该 import {forbidden}"
+
+
+def test_every_business_exception_is_a_business_error() -> None:
+    """业务层抛出的异常都要继承 BusinessError，MCP Server 才知道哪些消息可以告诉顾客。"""
+    for module_info in pkgutil.iter_modules(app.business.__path__):
+        module = importlib.import_module(f"app.business.{module_info.name}")
+        for name, value in inspect.getmembers(module, inspect.isclass):
+            if value.__module__ == module.__name__ and issubclass(value, Exception):
+                assert issubclass(value, BusinessError), f"{module.__name__}.{name} 应该继承 BusinessError"

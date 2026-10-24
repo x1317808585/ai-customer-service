@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
-
+from app.business.errors import BusinessError
 from app.models import Order, OrderItem, Product, ReturnRequest, ReturnStatus
 
 RETURN_WINDOW = timedelta(days=7)
@@ -16,23 +16,23 @@ LIST_LIMIT = 20
 _USES_UP_QUANTITY: tuple[ReturnStatus, ...] = ("pending", "completed")
 
 
-class OrderItemNotFoundError(Exception):
+class OrderItemNotFoundError(BusinessError):
     def __init__(self, order_item_id: int) -> None:
         super().__init__(f"订单项 {order_item_id} 不存在")
         self.order_item_id = order_item_id
 
 
-class ReturnNotFoundError(Exception):
+class ReturnNotFoundError(BusinessError):
     def __init__(self, return_id: int) -> None:
         super().__init__(f"退货申请 {return_id} 不存在")
         self.return_id = return_id
 
 
-class InvalidReturnError(Exception):
+class InvalidReturnError(BusinessError):
     """申请本身填写有误，比如数量不是正数、没写原因。"""
 
 
-class ReturnNotAllowedError(Exception):
+class ReturnNotAllowedError(BusinessError):
     """申请填写没问题，但按退货规则不能退。下面几种是具体原因。"""
 
 
@@ -58,7 +58,7 @@ class ReturnQuantityExceededError(ReturnNotAllowedError):
         self.remaining = remaining
 
 
-class ReturnNotPendingError(Exception):
+class ReturnNotPendingError(BusinessError):
     def __init__(self, status: ReturnStatus) -> None:
         super().__init__(f"退货申请已经是 {status} 状态，不能再处理")
         self.status = status

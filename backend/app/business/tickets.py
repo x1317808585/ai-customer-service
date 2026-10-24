@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
+from app.business.errors import BusinessError
 from app.business.orders import OrderNotFoundError
 from app.models import Order, Ticket, TicketStatus
 
@@ -11,7 +11,7 @@ SUMMARY_MAX_LENGTH = 1000
 LIST_LIMIT = 20
 
 
-class InvalidTicketError(Exception):
+class InvalidTicketError(BusinessError):
     """工单内容有误，比如摘要为空或太长。"""
 
 
