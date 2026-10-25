@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.business.catalog import Catalog, ProductView
 from app.business.errors import BusinessError
 from app.business.orders import Orders, OrderView
-from app.business.returns import Returns, ReturnView
+from app.business.returns import ReturnEligibility, ReturnPreview, Returns, ReturnView
 from app.business.tickets import Tickets, TicketView
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def hide_system_errors[**P, R](tool: Callable[P, Awaitable[R]]) -> Callable[P, A
 
 
 def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """注册只读工具。金额字段的单位都是分（59900 表示 599.00 元）。"""
+    """注册只读工具（包括只演练、不提交的预览工具）。金额字段的单位都是分（59900 表示 599.00 元）。"""
     catalog = Catalog(session_factory)
     orders = Orders(session_factory)
     returns = Returns(session_factory)
@@ -90,3 +90,25 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
     async def list_my_tickets() -> list[TicketView]:
         """列出当前顾客提交过的转人工工单。"""
         return await tickets.list_tickets(current_user_id())
+
+    
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def check_return_eligibility(
+        order_item_id: Annotated[int, Field(description="订单项编号（订单详情 items 里的 id，不是订单号）")],
+    ) -> ReturnEligibility:
+        """查询当前顾客的某个订单项能不能退货：还能退几件、退货期截止时间、不能退的原因。"""
+        return await returns.check_eligibility(current_user_id(), order_item_id)
+
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def preview_return_request(
+        order_item_id: Annotated[int, Field(description="订单项编号（订单详情 items 里的 id，不是订单号）")],
+        quantity: Annotated[int, Field(description="退几件")],
+        reason: Annotated[str, Field(description="退货原因，用顾客的话概括")],
+    ) -> ReturnPreview:
+        """按正式提交的规则检查一遍退货申请，返回将要提交的内容（含退款金额，单位分）。
+
+        只生成预览，不会提交。顾客在页面上确认后，系统才会真正提交。
+        """
+        return await returns.preview_return(current_user_id(), order_item_id, quantity, reason)

@@ -2,11 +2,12 @@ import asyncio
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.actions import ActionService
 from app.agent.reply_agent import ReplyAgent
+from app.business.returns import Returns
 from app.conversations import ConversationService
 from app.models import User
 from tests.agent.doubles import FakeToolbox, ScriptedChatModel, always, blocking_tool, calls_tools
-
 
 async def test_closing_the_reply_stream_early_closes_the_agent_and_frees_the_conversation(
     session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -15,7 +16,8 @@ async def test_closing_the_reply_stream_early_closes_the_agent_and_frees_the_con
     started = asyncio.Event()
     toolbox = FakeToolbox([blocking_tool("list_my_orders", started)])
     model = ScriptedChatModel(respond=always(calls_tools(("list_my_orders", {}))))
-    service = ConversationService(session_factory, ReplyAgent(model, toolbox))
+    actions = ActionService(session_factory, Returns(session_factory))
+    service = ConversationService(session_factory, ReplyAgent(model, toolbox), actions)
     alice_id = users["alice"].id
     conversation = await service.create_conversation(alice_id)
 

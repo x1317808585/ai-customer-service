@@ -31,7 +31,12 @@ export function ChatScreen({ user, onLogOut }: Props) {
             {chat.notice}
           </p>
         )}
-        <MessageList messages={chat.messages} />
+        <MessageList
+          messages={chat.messages}
+          busyActionIds={chat.busyActionIds}
+          onConfirmAction={chat.confirmProposal}
+          onCancelAction={chat.cancelProposal}
+        />
         <MessageComposer
           busy={chat.busy}
           replying={chat.replying}

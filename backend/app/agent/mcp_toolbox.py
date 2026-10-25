@@ -12,7 +12,16 @@ from app.mcp_token import issue_mcp_token
 
 # 允许交给模型的工具。MCP Server 以后增加了写操作工具，也不会自动交给模型，要在这里明确加上。
 ALLOWED_TOOLS = frozenset(
-    {"search_products", "get_product", "list_my_orders", "get_order", "list_my_returns", "list_my_tickets"}
+    {
+        "search_products",
+        "get_product",
+        "list_my_orders",
+        "get_order",
+        "list_my_returns",
+        "list_my_tickets",
+        "check_return_eligibility",
+        "preview_return_request",
+    }
 )
 MCP_HTTP_TIMEOUT_SECONDS = 15
 

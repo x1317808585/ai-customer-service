@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, StringConstraints
-
+from app.actions import ActionView
 from app.api.dependencies import ConversationServiceDep, CurrentUserDep
 from app.conversations import ReplyEvent
 from app.models import MessageRole
@@ -31,6 +31,7 @@ class MessageOut(BaseModel):
     role: MessageRole
     content: str
     created_at: datetime
+    action: ActionView | None  # 这条消息是确认卡片时，对应操作的当前状态
 
 
 class SendMessageIn(BaseModel):

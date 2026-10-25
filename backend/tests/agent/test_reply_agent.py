@@ -4,8 +4,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
-from app.agent.chat_graph import TOOL_LIMIT_REPLY, AgentLimits
-from app.agent.events import AgentEvent, DraftDiscarded, TextDelta, ToolStatus
+from app.agent.chat_graph import PROPOSAL_NOTE, TOOL_LIMIT_REPLY, AgentLimits
+from app.agent.events import ActionProposed, AgentEvent, DraftDiscarded, TextDelta, ToolStatus
 from app.agent.reply_agent import REPLY_TIMEOUT_MESSAGE, TOOLS_UNAVAILABLE_MESSAGE, ReplyAgent, ReplyFailedError
 from tests.agent.doubles import (
     FakeToolbox,
@@ -19,6 +19,7 @@ from tests.agent.doubles import (
     final_text,
     in_order,
     make_tool,
+    preview_tool,
 )
 from tests.conftest import InMemoryMcpToolbox
 
@@ -209,3 +210,68 @@ async def test_stopping_midway_cancels_the_tool_and_closes_the_toolbox() -> None
 
     assert first == ToolStatus("call-1", "list_my_orders", "running")
     assert (toolbox.opened, toolbox.closed) == (1, 1)
+
+
+
+# ---------- 发起待确认操作 ----------
+
+PREVIEW = {
+    "order_id": 5,
+    "order_item_id": 9,
+    "product_name": "SoundPods 降噪耳机",
+    "quantity": 1,
+    "refund_cents": 59900,
+    "reason": "左耳没声音",
+}
+RETURN_ARGS = {"order_item_id": 9, "quantity": 1, "reason": "左耳没声音"}
+
+
+def proposals(events: list[AgentEvent]) -> list[ActionProposed]:
+    return [event for event in events if isinstance(event, ActionProposed)]
+
+
+async def test_successful_preview_proposes_an_action_and_tells_model_it_is_not_submitted() -> None:
+    tool, _received = preview_tool(PREVIEW)
+    model = ScriptedChatModel(
+        respond=in_order(calls_tools(("preview_return_request", RETURN_ARGS)), AIMessage("请在上方确认"))
+    )
+    agent = ReplyAgent(model, FakeToolbox([tool]))
+
+    events = await collect(agent)
+
+    assert proposals(events) == [ActionProposed("return_request", RETURN_ARGS, PREVIEW)]
+    tool_result = model.calls[1][-1]
+    assert isinstance(tool_result, ToolMessage)
+    assert PROPOSAL_NOTE in tool_result.text
+
+
+async def test_only_one_proposal_per_reply_even_when_requested_in_parallel() -> None:
+    tool, received = preview_tool(PREVIEW)
+    model = ScriptedChatModel(
+        respond=in_order(
+            calls_tools(("preview_return_request", RETURN_ARGS), ("preview_return_request", RETURN_ARGS)),
+            calls_tools(("preview_return_request", RETURN_ARGS)),
+            AIMessage("请确认"),
+        )
+    )
+    agent = ReplyAgent(model, FakeToolbox([tool]))
+
+    events = await collect(agent)
+
+    assert len(proposals(events)) == 1
+    assert len(received) == 1
+    refused = [m for m in model.calls[1][-2:] + model.calls[2][-1:] if isinstance(m, ToolMessage) and m.status == "error"]
+    assert len(refused) == 2
+    assert all("已经发起过一项待确认的申请" in message.text for message in refused)
+
+
+async def test_failed_preview_proposes_nothing() -> None:
+    model = ScriptedChatModel(
+        respond=in_order(calls_tools(("preview_return_request", RETURN_ARGS)), AIMessage("不能退"))
+    )
+    agent = ReplyAgent(model, FakeToolbox([business_error_tool("preview_return_request", "已超过签收后 7 天的退货期")]))
+
+    events = await collect(agent)
+
+    assert proposals(events) == []
+    assert final_text(events) == "不能退"

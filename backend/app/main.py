@@ -9,12 +9,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.actions import ActionNotConfirmableError, ActionNotFoundError, ActionService
 from app.agent.llm import create_chat_model
 from app.agent.mcp_toolbox import McpToolbox
 from app.agent.reply_agent import ReplyAgent, Toolbox
+from app.api.actions import router as actions_router
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.trusted_origin import TrustedOriginMiddleware
+from app.business.returns import Returns
 from app.config import Settings, get_settings
 from app.conversations import (
     ConversationBusyError,
@@ -39,9 +42,11 @@ def create_app(
         reply_agent = ReplyAgent(
             chat_model or create_chat_model(app_settings), toolbox or McpToolbox(app_settings)
         )
+        action_service = ActionService(session_factory, Returns(session_factory))
 
         app.state.session_factory = session_factory
-        app.state.conversation_service = ConversationService(session_factory, reply_agent)
+        app.state.action_service = action_service
+        app.state.conversation_service = ConversationService(session_factory, reply_agent, action_service)
         yield
         await engine.dispose()
 
@@ -57,6 +62,7 @@ def create_app(
     )
     app.include_router(auth_router)
     app.include_router(conversations_router)
+    app.include_router(actions_router)
 
     @app.exception_handler(ConversationNotFoundError)
     async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:
@@ -65,6 +71,16 @@ def create_app(
     @app.exception_handler(ConversationBusyError)
     async def conversation_busy(_request: Request, _error: Exception) -> JSONResponse:
         return JSONResponse({"detail": "上一条回复还在生成中"}, status_code=status.HTTP_409_CONFLICT)
+
+    @app.exception_handler(ActionNotFoundError)
+    async def action_not_found(_request: Request, _error: Exception) -> JSONResponse:
+        return JSONResponse({"detail": "操作不存在"}, status_code=status.HTTP_404_NOT_FOUND)
+
+    @app.exception_handler(ActionNotConfirmableError)
+    async def action_not_confirmable(_request: Request, error: Exception) -> JSONResponse:
+        assert isinstance(error, ActionNotConfirmableError)
+        body = {"detail": str(error), "action": error.action.model_dump(mode="json")}
+        return JSONResponse(body, status_code=status.HTTP_409_CONFLICT)
 
     @app.get("/health")
     async def health(session: SessionDep) -> dict[str, str]:

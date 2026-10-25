@@ -1,7 +1,7 @@
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
@@ -10,13 +10,20 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agent.events import TextDelta, ToolStatus
+from app.agent.events import ActionProposed, TextDelta, ToolStatus
 
 SYSTEM_PROMPT = (
     "你是电商平台的 AI 客服，用简洁、礼貌的中文回答顾客的问题。\n"
     "涉及商品、订单、退货、工单的信息，必须先用工具查询，不要猜测或编造。\n"
-    "工具返回的金额单位是分，回答时换算成元。工具报错时，如实告诉顾客没有查到或查询失败。"
+    "工具返回的金额单位是分，回答时换算成元。工具报错时，如实告诉顾客没有查到或查询失败。\n"
+    "顾客要退货时：先查订单拿到要退商品的订单项编号（order_item_id，不是订单号），"
+    "再用 preview_return_request 生成退货申请。它只生成待确认的申请，顾客在页面上点击确认后才会提交，"
+    "所以不要说已经提交。一次回复只能发起一项申请。"
 )
+
+# 预览工具 → 它发起的待确认操作类型。预览成功后，页面上会出现确认卡片
+PROPOSAL_TOOLS = {"preview_return_request": "return_request"}
+PROPOSAL_NOTE = "已生成待确认的申请，页面上会显示确认卡片。顾客点击确认后才会提交，现在还没有提交。"
 TOOL_LIMIT_REPLY = "抱歉，这个问题需要查询的内容太多，我暂时处理不了。可以换个问法，或者告诉我需要转人工。"
 
 
@@ -36,6 +43,7 @@ class ToolsUnavailableError(Exception):
 
 class AgentState(MessagesState):
     tool_rounds: int
+    proposal_made: bool  # 这次回复是否已经发起过待确认操作
 
 
 def build_chat_graph(
@@ -64,6 +72,7 @@ def build_chat_graph(
         last = state["messages"][-1]
         assert isinstance(last, AIMessage)
         write = get_stream_writer()
+        proposal_made = state.get("proposal_made", False)
         results: list[BaseMessage] = []
         for index, call in enumerate(last.tool_calls):
             call_id = call["id"] or f"call-{index}"
@@ -73,6 +82,9 @@ def build_chat_graph(
                 continue
             if tool is None:
                 results.append(_refused(call_id, f"没有名为 {call['name']} 的工具。"))
+                continue
+            if call["name"] in PROPOSAL_TOOLS and proposal_made:
+                results.append(_refused(call_id, "这次回复已经发起过一项待确认的申请，请先让顾客确认或取消。"))
                 continue
 
             write(ToolStatus(call_id, tool.name, "running"))
@@ -84,8 +96,16 @@ def build_chat_graph(
                 raise ToolsUnavailableError(f"工具 {tool.name} 调用失败") from error
             failed = isinstance(message, ToolMessage) and message.status == "error"
             write(ToolStatus(call_id, tool.name, "failed" if failed else "succeeded"))
+            if tool.name in PROPOSAL_TOOLS and not failed:
+                write(ActionProposed(PROPOSAL_TOOLS[tool.name], dict(call["args"]), _structured(message)))
+                message = _with_note(message, PROPOSAL_NOTE)
+                proposal_made = True
             results.append(message)
-        return {"messages": results, "tool_rounds": state.get("tool_rounds", 0) + 1}
+        return {
+            "messages": results,
+            "tool_rounds": state.get("tool_rounds", 0) + 1,
+            "proposal_made": proposal_made,
+        }
 
     async def give_up(_state: AgentState) -> dict[str, list[BaseMessage]]:
         get_stream_writer()(TextDelta(TOOL_LIMIT_REPLY))
@@ -100,6 +120,23 @@ def build_chat_graph(
     graph.add_edge("call_tools", "model")
     graph.add_edge("give_up", END)
     return graph.compile()
+
+
+def _structured(message: object) -> dict[str, Any]:
+    """MCP 工具的结构化结果放在 ToolMessage 的 artifact 里。"""
+    artifact = getattr(message, "artifact", None)
+    data = artifact.get("structured_content") if isinstance(artifact, dict) else None
+    if not isinstance(data, dict):
+        raise ToolsUnavailableError("预览工具没有返回结构化结果")
+    return data
+
+
+def _with_note(message: ToolMessage, note: str) -> ToolMessage:
+    """在工具结果后面补一句说明，交给模型看。"""
+    content = message.content
+    if isinstance(content, str):
+        return message.model_copy(update={"content": f"{content}\n{note}"})
+    return message.model_copy(update={"content": [*content, {"type": "text", "text": note}]})
 
 
 def _refused(call_id: str, reason: str) -> ToolMessage:

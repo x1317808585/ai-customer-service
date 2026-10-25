@@ -19,7 +19,16 @@ AddProduct = Callable[..., Awaitable[int]]
 AddOrder = Callable[..., Awaitable[Order]]
 SessionFactory = async_sessionmaker[AsyncSession]
 
-READ_TOOLS = {"search_products", "get_product", "list_my_orders", "get_order", "list_my_returns", "list_my_tickets"}
+READ_TOOLS = {
+    "search_products",
+    "get_product",
+    "list_my_orders",
+    "get_order",
+    "list_my_returns",
+    "list_my_tickets",
+    "check_return_eligibility",
+    "preview_return_request",
+}
 
 
 def data_of(result: CallToolResult) -> Any:
@@ -39,7 +48,7 @@ async def give_customer_some_history(
 ) -> dict[str, set[int]]:
     """给一个顾客准备订单、退货申请和工单，返回各自的 id，方便检查别人看不到。"""
     product = await add_product(f"{user.username} 买的耳机")
-    order = await add_order(user.id, product, delivered_at=datetime.now(UTC) - timedelta(days=1))
+    order = await add_order(user.id, product, quantity=2, delivered_at=datetime.now(UTC) - timedelta(days=1))
     request = await Returns(session_factory).request_return(user.id, order.items[0].id, quantity=1, reason="坏了")
     ticket = await Tickets(session_factory).open_ticket(user.id, f"{user.username} 的问题", order_id=order.id)
     return {"orders": {order.id}, "returns": {request.id}, "tickets": {ticket.id}}
@@ -55,7 +64,7 @@ async def database_snapshot(session_factory: SessionFactory) -> dict[str, list[t
     return snapshot
 
 
-async def test_tools_are_the_six_queries_and_never_take_a_user_id(open_mcp_session: OpenMcpSession) -> None:
+async def test_all_tools_are_read_only_and_never_take_a_user_id(open_mcp_session: OpenMcpSession) -> None:
     async with open_mcp_session("alice") as session:
         tools = (await session.list_tools()).tools
 
@@ -151,12 +160,15 @@ async def test_read_tools_do_not_change_any_data(
 
     async with open_mcp_session("alice") as session:
         products = data_of(await session.call_tool("search_products", {"keyword": "耳机"}))
+        order = data_of(await session.call_tool("get_order", {"order_id": order_id}))
+        item_id = order["items"][0]["id"]
         calls = {
             "get_product": {"product_id": products[0]["id"]},
             "list_my_orders": {},
-            "get_order": {"order_id": order_id},
             "list_my_returns": {},
             "list_my_tickets": {},
+            "check_return_eligibility": {"order_item_id": item_id},
+            "preview_return_request": {"order_item_id": item_id, "quantity": 1, "reason": "坏了"},
         }
         for name, arguments in calls.items():
             data_of(await session.call_tool(name, arguments))
@@ -190,3 +202,44 @@ async def test_order_details_include_item_ids_amounts_and_times(
     assert data["items"][0]["id"] == order.items[0].id  # 以后申请退货要用订单项 id
     assert data["total_cents"] == 119800
     assert datetime.fromisoformat(data["delivered_at"]) == delivered_at
+
+
+async def test_return_eligibility_and_preview_for_own_item(
+    open_mcp_session: OpenMcpSession, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机", price_cents=59900)
+    order = await add_order(users["alice"].id, earbuds, quantity=2, delivered_at=datetime.now(UTC) - timedelta(days=1))
+    item_id = order.items[0].id
+
+    async with open_mcp_session("alice") as session:
+        eligibility = data_of(await session.call_tool("check_return_eligibility", {"order_item_id": item_id}))
+        preview = data_of(
+            await session.call_tool(
+                "preview_return_request", {"order_item_id": item_id, "quantity": 2, "reason": "左耳没声音"}
+            )
+        )
+
+    assert (eligibility["eligible"], eligibility["returnable_quantity"]) == (True, 2)
+    assert preview == {
+        "order_id": order.id,
+        "order_item_id": item_id,
+        "product_name": "SoundPods 降噪耳机",
+        "quantity": 2,
+        "refund_cents": 119800,
+        "reason": "左耳没声音",
+    }
+
+
+async def test_cannot_preview_a_return_for_someone_elses_item(
+    open_mcp_session: OpenMcpSession, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机")
+    order = await add_order(users["alice"].id, earbuds, delivered_at=datetime.now(UTC) - timedelta(days=1))
+
+    async with open_mcp_session("bob") as session:
+        result = await session.call_tool(
+            "preview_return_request", {"order_item_id": order.items[0].id, "quantity": 1, "reason": "坏了"}
+        )
+
+    assert result.isError
+    assert f"订单项 {order.items[0].id} 不存在" in error_text(result)

@@ -1,10 +1,12 @@
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
+
 from app.business.errors import BusinessError
 from app.models import Order, OrderItem, Product, ReturnRequest, ReturnStatus
 
@@ -53,9 +55,17 @@ class ProductNotReturnableError(ReturnNotAllowedError):
 
 class ReturnQuantityExceededError(ReturnNotAllowedError):
     def __init__(self, requested: int, remaining: int) -> None:
-        super().__init__(f"最多还能退 {remaining} 件，申请了 {requested} 件")
+        if remaining <= 0:
+            super().__init__("这件商品已经没有可退的数量了")
+        else:
+            super().__init__(f"最多还能退 {remaining} 件，申请了 {requested} 件")
         self.requested = requested
         self.remaining = remaining
+
+
+class ReturnPreviewChangedError(BusinessError):
+    def __init__(self) -> None:
+        super().__init__("退货内容和确认时不一致，请重新发起")
 
 
 class ReturnNotPendingError(BusinessError):
@@ -94,6 +104,63 @@ class ReturnView(BaseModel):
         )
 
 
+class ReturnEligibility(BaseModel):
+    """一个订单项现在能不能退。不能退时 reason 写明原因。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    order_item_id: int
+    product_name: str
+    eligible: bool
+    returnable_quantity: int
+    return_deadline: datetime | None
+    reason: str | None
+
+
+class ReturnPreview(BaseModel):
+    """将要提交的退货申请：用户确认的就是这些内容。退款金额按下单时的单价计算。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    order_id: int
+    order_item_id: int
+    product_name: str
+    quantity: int
+    refund_cents: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class _ItemFacts:
+    """判断一个订单项能不能退所需的数据。"""
+
+    item: OrderItem
+    delivered_at: datetime | None
+    returnable: bool
+    remaining: int
+
+
+def _checked_reason(quantity: int, reason: str) -> str:
+    """检查申请本身的填写，返回去掉首尾空格的原因。"""
+    reason = reason.strip()
+    if quantity <= 0:
+        raise InvalidReturnError("退货数量必须是正数")
+    if not reason or len(reason) > REASON_MAX_LENGTH:
+        raise InvalidReturnError(f"请填写退货原因（不超过 {REASON_MAX_LENGTH} 个字）")
+    return reason
+
+
+def _preview_of(facts: _ItemFacts, quantity: int, reason: str) -> ReturnPreview:
+    return ReturnPreview(
+        order_id=facts.item.order_id,
+        order_item_id=facts.item.id,
+        product_name=facts.item.product_name,
+        quantity=quantity,
+        refund_cents=facts.item.unit_price_cents * quantity,
+        reason=reason,
+    )
+
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -127,54 +194,110 @@ class Returns:
             )
             return [ReturnView.of(request) for request in requests]
 
+    async def check_eligibility(self, user_id: int, order_item_id: int) -> ReturnEligibility:
+        """这个订单项现在能不能退、还能退几件、退货期到什么时候。只查询，不写入。"""
+        async with self._session_factory() as session:
+            facts = await self._load_facts(session, user_id, order_item_id, lock=False)
+        problem = self._rule_problem(facts)
+        if problem is None and facts.remaining <= 0:
+            problem = ReturnQuantityExceededError(1, facts.remaining)
+        return ReturnEligibility(
+            order_item_id=facts.item.id,
+            product_name=facts.item.product_name,
+            eligible=problem is None,
+            returnable_quantity=max(facts.remaining, 0) if problem is None else 0,
+            return_deadline=self._deadline(facts),
+            reason=str(problem) if problem else None,
+        )
+
+    async def preview_return(self, user_id: int, order_item_id: int, quantity: int, reason: str) -> ReturnPreview:
+        """按正式提交的规则演练一遍，返回将要提交的内容。不加锁，也不写入。"""
+        reason = _checked_reason(quantity, reason)
+        async with self._session_factory() as session:
+            facts = await self._load_facts(session, user_id, order_item_id, lock=False)
+        self._ensure_allowed(facts, quantity)
+        return _preview_of(facts, quantity, reason)
+
     async def request_return(self, user_id: int, order_item_id: int, quantity: int, reason: str) -> ReturnView:
-        reason = reason.strip()
-        if quantity <= 0:
-            raise InvalidReturnError("退货数量必须是正数")
-        if not reason or len(reason) > REASON_MAX_LENGTH:
-            raise InvalidReturnError(f"请填写退货原因（不超过 {REASON_MAX_LENGTH} 个字）")
-
+        """提交退货申请（自己开一个事务）。"""
         async with self._session_factory() as session, session.begin():
-            # 锁住这个订单项：同一订单项的其他退货申请要等这里结束，才能计算可退数量。
-            row = (
-                await session.execute(
-                    select(OrderItem, Order.delivered_at, Product.returnable)
-                    .join(Order, Order.id == OrderItem.order_id)
-                    .join(Product, Product.id == OrderItem.product_id)
-                    .where(OrderItem.id == order_item_id, Order.user_id == user_id)
-                    .with_for_update(of=OrderItem)
-                )
-            ).one_or_none()
-            if row is None:
-                raise OrderItemNotFoundError(order_item_id)
-            item, delivered_at, returnable = row
+            return await self.request_return_in(session, user_id, order_item_id, quantity, reason)
 
-            if delivered_at is None:  # 数据库约束保证：只有已签收的订单才有签收时间
-                raise OrderNotDeliveredError()
-            if self._clock() > delivered_at + self._return_window:
-                raise ReturnWindowExpiredError(self._return_window.days)
-            if not returnable:
-                raise ProductNotReturnableError(item.product_name)
+    async def request_return_in(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        order_item_id: int,
+        quantity: int,
+        reason: str,
+        expected: ReturnPreview | None = None,
+    ) -> ReturnView:
+        """在调用方的事务里提交退货申请：只写入，不提交也不回滚，由调用方决定。
 
-            used = await session.scalar(
-                select(func.coalesce(func.sum(ReturnRequest.quantity), 0)).where(
-                    ReturnRequest.order_item_id == item.id, ReturnRequest.status.in_(_USES_UP_QUANTITY)
-                )
-            )
-            remaining = item.quantity - used
-            if quantity > remaining:
-                raise ReturnQuantityExceededError(quantity, remaining)
+        先锁住订单项（直到调用方的事务结束），再按最新数据重新计算预览。
+        expected 是用户确认过的预览，和重新计算的结果不一致时拒绝，不会按新内容悄悄执行。
+        """
+        reason = _checked_reason(quantity, reason)
+        facts = await self._load_facts(session, user_id, order_item_id, lock=True)
+        self._ensure_allowed(facts, quantity)
+        preview = _preview_of(facts, quantity, reason)
+        if expected is not None and preview != expected:
+            raise ReturnPreviewChangedError()
 
-            request = ReturnRequest(
-                order_item=item,
-                quantity=quantity,
-                refund_cents=item.unit_price_cents * quantity,
-                reason=reason,
-                status="pending",
-            )
-            session.add(request)
-
+        request = ReturnRequest(
+            order_item=facts.item,
+            quantity=quantity,
+            refund_cents=preview.refund_cents,
+            reason=reason,
+            status="pending",
+        )
+        session.add(request)
+        await session.flush()
         return ReturnView.of(request)
+
+    async def _load_facts(
+        self, session: AsyncSession, user_id: int, order_item_id: int, *, lock: bool
+    ) -> _ItemFacts:
+        """读取判断能不能退所需的全部数据。lock=True 时锁住订单项，同一订单项的其他申请要排队。"""
+        query = (
+            select(OrderItem, Order.delivered_at, Product.returnable)
+            .join(Order, Order.id == OrderItem.order_id)
+            .join(Product, Product.id == OrderItem.product_id)
+            .where(OrderItem.id == order_item_id, Order.user_id == user_id)
+        )
+        if lock:
+            query = query.with_for_update(of=OrderItem)
+        row = (await session.execute(query)).one_or_none()
+        if row is None:
+            raise OrderItemNotFoundError(order_item_id)
+        item, delivered_at, returnable = row
+
+        used = await session.scalar(
+            select(func.coalesce(func.sum(ReturnRequest.quantity), 0)).where(
+                ReturnRequest.order_item_id == item.id, ReturnRequest.status.in_(_USES_UP_QUANTITY)
+            )
+        )
+        return _ItemFacts(item=item, delivered_at=delivered_at, returnable=returnable, remaining=item.quantity - used)
+
+    def _deadline(self, facts: _ItemFacts) -> datetime | None:
+        return None if facts.delivered_at is None else facts.delivered_at + self._return_window
+
+    def _rule_problem(self, facts: _ItemFacts) -> ReturnNotAllowedError | None:
+        """不看数量时，这个订单项按规则能不能退。能退返回 None。"""
+        deadline = self._deadline(facts)
+        if deadline is None:  # 数据库约束保证：只有已签收的订单才有签收时间
+            return OrderNotDeliveredError()
+        if self._clock() > deadline:
+            return ReturnWindowExpiredError(self._return_window.days)
+        if not facts.returnable:
+            return ProductNotReturnableError(facts.item.product_name)
+        return None
+
+    def _ensure_allowed(self, facts: _ItemFacts, quantity: int) -> None:
+        if problem := self._rule_problem(facts):
+            raise problem
+        if quantity > facts.remaining:
+            raise ReturnQuantityExceededError(quantity, facts.remaining)
 
     async def cancel_return(self, user_id: int, return_id: int) -> ReturnView:
         """顾客撤回自己还在处理中的退货申请。"""

@@ -102,7 +102,7 @@ class ReplyAgent:
         config: dict[str, Any] = {"recursion_limit": 2 * self._limits.max_tool_rounds + 4}
         draft = _Draft(emit)
         async for mode, payload in graph.astream(
-            {"messages": history, "tool_rounds": 0}, config, stream_mode=["messages", "custom"]
+            {"messages": history, "tool_rounds": 0, "proposal_made": False}, config, stream_mode=["messages", "custom"]
         ):
             if mode == "custom":
                 emit(payload)

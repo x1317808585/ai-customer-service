@@ -115,3 +115,40 @@ async def test_offline_model_summarizes_tool_results(
     reply = await offline_model("list_my_orders").ainvoke(history)
 
     assert reply.text == expected
+
+
+
+async def test_offline_model_previews_a_return_only_for_an_explicit_order_item() -> None:
+    model = offline_model("preview_return_request", "list_my_returns")
+
+    explicit = await model.ainvoke([HumanMessage("退货 订单项 3")])
+    vague = await model.ainvoke([HumanMessage("我要退货")])
+
+    assert [(call["name"], call["args"]) for call in explicit.tool_calls] == [
+        ("preview_return_request", {"order_item_id": 3, "quantity": 1, "reason": "退货 订单项 3"})
+    ]
+    assert [call["name"] for call in vague.tool_calls] == ["list_my_returns"]
+
+
+@pytest.mark.parametrize(
+    ("text", "status", "expected"),
+    [
+        ("（预览内容）", "success", "（离线模式）已生成退货申请，请在上方的卡片里确认。"),
+        (
+            "Error executing tool preview_return_request: 已超过签收后 7 天的退货期",
+            "error",
+            "（离线模式）无法申请退货：已超过签收后 7 天的退货期。",
+        ),
+    ],
+    ids=["previewed", "refused"],
+)
+async def test_offline_model_explains_the_return_preview(text: str, status: str, expected: str) -> None:
+    history = [
+        HumanMessage("退货 订单项 3"),
+        AIMessage("", tool_calls=[{"name": "preview_return_request", "args": {}, "id": "call-1"}]),
+        ToolMessage(text, tool_call_id="call-1", name="preview_return_request", status=status),
+    ]
+
+    reply = await offline_model("preview_return_request").ainvoke(history)
+
+    assert reply.text == expected

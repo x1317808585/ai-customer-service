@@ -2,6 +2,7 @@ from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 
+from app.actions import ActionService
 from app.auth import InvalidTokenError, read_user_id
 from app.config import Settings
 from app.conversations import ConversationService
@@ -39,9 +40,16 @@ async def get_current_user(
     return user
 
 
+
+
 def get_conversation_service(request: Request) -> ConversationService:
     return request.app.state.conversation_service
 
 
+def get_action_service(request: Request) -> ActionService:
+    return request.app.state.action_service
+
+
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
+ActionServiceDep = Annotated[ActionService, Depends(get_action_service)]

@@ -1,7 +1,7 @@
 """Agent 生成回复时发出的事件。会话服务把它们转换成发给前端的 SSE 事件。"""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 ToolCallStatus = Literal["running", "succeeded", "failed"]
 
@@ -27,4 +27,13 @@ class ToolStatus:
     status: ToolCallStatus
 
 
-AgentEvent = TextDelta | DraftDiscarded | ToolStatus
+@dataclass(frozen=True)
+class ActionProposed:
+    """模型通过预览工具发起了一项需要用户确认的操作。arguments 是执行参数，preview 是服务器算出的预览。"""
+
+    kind: str
+    arguments: dict[str, Any]
+    preview: dict[str, Any]
+
+
+AgentEvent = TextDelta | DraftDiscarded | ToolStatus | ActionProposed

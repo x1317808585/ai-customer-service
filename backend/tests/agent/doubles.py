@@ -144,7 +144,21 @@ def business_error_tool(name: str, message: str) -> BaseTool:
         coroutine=run, name=name, description=f"测试工具 {name}", handle_tool_error=True
     )
 
+def preview_tool(preview: dict[str, Any]) -> tuple[BaseTool, list[dict[str, Any]]]:
+    """模拟 MCP 的退货预览工具：正文给模型看，结构化结果放在 artifact 里。返回工具和每次收到的参数。"""
+    received: list[dict[str, Any]] = []
 
+    async def run(order_item_id: int, quantity: int, reason: str) -> tuple[str, dict[str, Any]]:
+        received.append({"order_item_id": order_item_id, "quantity": quantity, "reason": reason})
+        return json.dumps(preview, ensure_ascii=False), {"structured_content": preview}
+
+    tool = StructuredTool.from_function(
+        coroutine=run,
+        name="preview_return_request",
+        description="测试用的退货预览",
+        response_format="content_and_artifact",
+    )
+    return tool, received
 def final_text(events: Iterable[AgentEvent]) -> str:
     """按前端的规则拼出最终显示的回答：遇到 DraftDiscarded 就清空重来。"""
     text = ""

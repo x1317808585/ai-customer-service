@@ -1,7 +1,8 @@
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, func, true
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 UserRole = Literal["customer", "admin"]
@@ -9,6 +10,8 @@ MessageRole = Literal["user", "assistant"]
 OrderStatus = Literal["placed", "shipped", "delivered", "cancelled"]
 ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
 TicketStatus = Literal["open", "closed"]
+ActionKind = Literal["return_request"]
+ActionStatus = Literal["pending", "executed", "cancelled", "failed"]
 
 CreatedAt = Annotated[
     datetime,
@@ -55,6 +58,11 @@ class Message(Base):
     role: Mapped[MessageRole] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[CreatedAt]
+
+    # 这条消息是一张确认卡片时，对应的待确认操作
+    action: Mapped["PendingAction | None"] = relationship(
+        foreign_keys="PendingAction.card_message_id", viewonly=True, lazy="raise"
+    )
 
 
 class Product(Base):
@@ -146,4 +154,36 @@ class Ticket(Base):
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
     summary: Mapped[str] = mapped_column(String(1000))
     status: Mapped[TicketStatus] = mapped_column(String(16))
+    created_at: Mapped[CreatedAt]
+
+
+class PendingAction(Base):
+    """助手提议、等待用户在页面上确认的业务写操作。确认接口是它唯一的执行入口。"""
+
+    __tablename__ = "pending_actions"
+    __table_args__ = (
+        CheckConstraint("kind IN ('return_request')", name="ck_pending_actions_kind"),
+        CheckConstraint(
+            "status IN ('pending', 'executed', 'cancelled', 'failed')", name="ck_pending_actions_status"
+        ),
+        CheckConstraint(
+            "(status = 'pending') = (resolved_at IS NULL)", name="ck_pending_actions_resolved_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    # 触发它的用户消息。唯一：一次回复最多发起一个待确认操作
+    source_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), unique=True)
+    # 显示确认卡片的那条消息
+    card_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), unique=True)
+    kind: Mapped[ActionKind] = mapped_column(String(32))
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    preview: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    status: Mapped[ActionStatus] = mapped_column(String(16))
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(String(500))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[CreatedAt]

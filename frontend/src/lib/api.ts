@@ -1,3 +1,5 @@
+import type { ActionView } from "@/lib/actions";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
 export type User = {
@@ -17,13 +19,16 @@ export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  /** 这条消息是确认卡片时，对应操作的当前状态 */
+  action: ActionView | null;
 };
 
-/** 后端返回了非 2xx 状态码。这类请求被服务器明确拒绝，不会写入任何数据。 */
+/** 后端返回了非 2xx 状态码。data 是响应内容（比如 409 时附带的操作当前状态）。 */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly data: unknown = null,
   ) {
     super(message);
   }
@@ -81,6 +86,19 @@ export async function sendMessage(
   return response.body;
 }
 
+export async function getAction(actionId: number): Promise<ActionView> {
+  return (await request(`/api/actions/${actionId}`)).json();
+}
+
+/** 确认并执行。返回 200 不代表已提交，要看返回的 status 是 executed 还是 failed。 */
+export async function confirmAction(actionId: number): Promise<ActionView> {
+  return (await request(`/api/actions/${actionId}/confirm`, { method: "POST" })).json();
+}
+
+export async function cancelAction(actionId: number): Promise<ActionView> {
+  return (await request(`/api/actions/${actionId}/cancel`, { method: "POST" })).json();
+}
+
 function jsonBody(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
@@ -90,17 +108,25 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
     throw new Error("缺少 NEXT_PUBLIC_API_BASE_URL，请把 frontend/.env.example 复制为 .env.local");
   }
   const response = await fetch(`${API_BASE_URL}${path}`, { ...init, credentials: "include" });
-  if (!response.ok) throw new ApiError(response.status, await readErrorDetail(response));
+  if (!response.ok) {
+    const data = await readJson(response);
+    throw new ApiError(response.status, describeFailure(response.status, data), data);
+  }
   return response;
 }
 
-async function readErrorDetail(response: Response): Promise<string> {
+async function readJson(response: Response): Promise<unknown> {
   try {
-    const body = await response.json();
-    if (typeof body.detail === "string") return body.detail;
-    if (response.status === 422) return "消息内容不符合要求，请检查后重试";
+    return await response.json();
   } catch {
-    // 响应不是 JSON，使用下面的通用提示
+    return null; // 响应不是 JSON
   }
-  return `请求失败（${response.status}）`;
+}
+
+function describeFailure(status: number, data: unknown): string {
+  if (typeof data === "object" && data !== null && "detail" in data && typeof data.detail === "string") {
+    return data.detail;
+  }
+  if (status === 422) return "消息内容不符合要求，请检查后重试";
+  return `请求失败（${status}）`;
 }

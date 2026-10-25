@@ -31,7 +31,7 @@ async def server_with_an_extra_write_tool() -> AsyncIterator[httpx.ASGITransport
         yield httpx.ASGITransport(app=app)
 
 
-async def test_gives_exactly_the_six_query_tools(mcp_toolbox: InMemoryMcpToolbox, users: dict[str, User]) -> None:
+async def test_gives_exactly_the_allowed_tools(mcp_toolbox: InMemoryMcpToolbox, users: dict[str, User]) -> None:
     async with mcp_toolbox.open(users["alice"].id) as tools:
         names = {tool.name for tool in tools}
 

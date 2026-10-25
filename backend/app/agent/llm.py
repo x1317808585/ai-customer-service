@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 from uuid import uuid4
@@ -22,7 +23,9 @@ MAX_RETRIES = 2
 # 离线模型的“规则”：消息里出现这些词，就调用对应的查询工具
 OFFLINE_KEYWORD_TOOLS = {"订单": "list_my_orders", "退货": "list_my_returns", "工单": "list_my_tickets"}
 OFFLINE_TOOL_LABELS = {"list_my_orders": "订单", "list_my_returns": "退货申请", "list_my_tickets": "工单"}
-
+# 演示申请退货：消息里同时有“退货”和“订单项 N”时，对订单项 N 发起退货预览（数量 1，原因是用户原话）
+OFFLINE_RETURN_PATTERN = re.compile(r"退货.*?订单项\s*(\d+)")
+PREVIEW_RETURN_TOOL = "preview_return_request"
 
 def create_chat_model(settings: Settings) -> BaseChatModel:
     """根据配置创建聊天模型。调用方只依赖 BaseChatModel，不关心具体是哪一家。"""
@@ -39,7 +42,7 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
 
 class OfflineChatModel(BaseChatModel):
     """离线聊天模型：不联网、不需要 Key，按固定规则回复，用来在没有真实模型时走通整个流程。
-
+    - 消息形如“退货 订单项 3”时，对订单项 3 发起退货预览（不会替用户在多件商品里做选择）；
     - 消息里有“订单”“退货”“工单”且绑定了对应工具时，调用那个查询工具；
     - 收到工具结果后，回复查到了几条记录；
     - 其他情况把用户的话按固定格式逐字返回。
@@ -91,6 +94,10 @@ class OfflineChatModel(BaseChatModel):
             return AIMessage(_summarize_tool_results(_trailing_tool_messages(messages)))
 
         question = next((m.text for m in reversed(messages) if isinstance(m, HumanMessage)), "")
+        if (match := OFFLINE_RETURN_PATTERN.search(question)) and PREVIEW_RETURN_TOOL in self.tool_names:
+            arguments = {"order_item_id": int(match.group(1)), "quantity": 1, "reason": question}
+            call_id = f"offline-{uuid4().hex[:8]}"
+            return AIMessage("", tool_calls=[{"name": PREVIEW_RETURN_TOOL, "args": arguments, "id": call_id}])
         for keyword, tool_name in OFFLINE_KEYWORD_TOOLS.items():
             if keyword in question and tool_name in self.tool_names:
                 call_id = f"offline-{uuid4().hex[:8]}"
@@ -110,6 +117,12 @@ def _trailing_tool_messages(messages: list[BaseMessage]) -> list[ToolMessage]:
 def _summarize_tool_results(results: list[ToolMessage]) -> str:
     parts = []
     for result in results:
+        if result.name == PREVIEW_RETURN_TOOL:
+            if result.status == "error":
+                parts.append(f"无法申请退货：{result.text.split(': ', 1)[-1]}")
+            else:
+                parts.append("已生成退货申请，请在上方的卡片里确认")
+            continue
         label = OFFLINE_TOOL_LABELS.get(result.name or "", result.name or "数据")
         if result.status == "error":
             parts.append(f"查询{label}失败")

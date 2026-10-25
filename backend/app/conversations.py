@@ -2,15 +2,18 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import aclosing, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import selectinload
 
-from app.agent.events import DraftDiscarded, TextDelta, ToolStatus
+from app.actions import ActionService, ActionView
+from app.agent.events import ActionProposed, DraftDiscarded, TextDelta, ToolStatus
 from app.agent.reply_agent import ReplyAgent, ReplyFailedError
-from app.models import Conversation, Message
+from app.models import Conversation, Message, MessageRole
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +22,13 @@ TITLE_MAX_LENGTH = 20
 HISTORY_MESSAGE_LIMIT = 20
 
 ReplyEventType = Literal[
-    "message.accepted", "message.delta", "message.discard", "tool.status", "message.done", "error"
+    "message.accepted",
+    "message.delta",
+    "message.discard",
+    "tool.status",
+    "action.proposed",
+    "message.done",
+    "error",
 ]
 
 
@@ -29,6 +38,17 @@ class ReplyEvent:
 
     type: ReplyEventType
     data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class HistoryMessage:
+    """历史记录里的一条消息。确认卡片消息带着对应操作的当前状态。"""
+
+    id: int
+    role: MessageRole
+    content: str
+    created_at: datetime
+    action: ActionView | None
 
 
 class ConversationNotFoundError(Exception):
@@ -46,9 +66,11 @@ class ConversationService:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         reply_agent: ReplyAgent,
+        actions: ActionService,
     ) -> None:
         self._session_factory = session_factory
         self._reply_agent = reply_agent
+        self._actions = actions
         self._replying_conversation_ids: set[int] = set()
 
     async def create_conversation(self, user_id: int) -> Conversation:
@@ -68,15 +90,25 @@ class ConversationService:
             )
             return list(conversations)
 
-    async def list_messages(self, user_id: int, conversation_id: int) -> list[Message]:
+    async def list_messages(self, user_id: int, conversation_id: int) -> list[HistoryMessage]:
         async with self._session_factory() as session:
             await _get_owned_conversation(session, user_id, conversation_id)
             messages = await session.scalars(
                 select(Message)
                 .where(Message.conversation_id == conversation_id)
+                .options(selectinload(Message.action))
                 .order_by(Message.id)
             )
-            return list(messages)
+            return [
+                HistoryMessage(
+                    id=message.id,
+                    role=message.role,
+                    content=message.content,
+                    created_at=message.created_at,
+                    action=self._actions.view(message.action) if message.action else None,
+                )
+                for message in messages
+            ]
 
     async def send_message(
         self, user_id: int, conversation_id: int, content: str
@@ -104,7 +136,7 @@ class ConversationService:
                 user_message = Message(conversation_id=conversation_id, role="user", content=content)
                 session.add(user_message)
                 await session.commit()
-                history = await _load_recent_history(session, conversation_id)
+                history = await self._load_recent_history(session, conversation_id)
             yield ReplyEvent("message.accepted", {"message_id": user_message.id})
 
             try:
@@ -124,6 +156,26 @@ class ConversationService:
                                 yield ReplyEvent(
                                     "tool.status", {"call_id": call_id, "tool": tool, "status": tool_status}
                                 )
+                            case ActionProposed(kind=kind, arguments=arguments, preview=preview):
+                                # 先在一个事务里保存卡片消息和待确认操作，提交成功后才推送给前端。
+                                # 这样之后即使回复失败或被停止，刷新页面时卡片也还在。
+                                async with self._session_factory() as session, session.begin():
+                                    action = await self._actions.propose_in(
+                                        session,
+                                        user_id=user_id,
+                                        conversation_id=conversation_id,
+                                        source_message_id=user_message.id,
+                                        kind=kind,
+                                        arguments=arguments,
+                                        preview=preview,
+                                    )
+                                yield ReplyEvent(
+                                    "action.proposed",
+                                    {
+                                        "message_id": action.card_message_id,
+                                        "action": self._actions.view(action).model_dump(mode="json"),
+                                    },
+                                )
 
                 async with self._session_factory() as session:
                     reply = Message(conversation_id=conversation_id, role="assistant", content=reply_text)
@@ -139,6 +191,25 @@ class ConversationService:
                 return
 
             yield ReplyEvent("message.done", {"message_id": reply.id})
+
+    async def _load_recent_history(self, session: AsyncSession, conversation_id: int) -> list[BaseMessage]:
+        """交给模型的最近历史。确认卡片按操作的当前状态描述，模型据此回答“提交成功了吗”。"""
+        recent = await session.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .options(selectinload(Message.action))
+            .order_by(Message.id.desc())
+            .limit(HISTORY_MESSAGE_LIMIT)
+        )
+        history: list[BaseMessage] = []
+        for message in reversed(list(recent)):
+            if message.action is not None:
+                history.append(AIMessage(self._actions.describe(message.action)))
+            elif message.role == "user":
+                history.append(HumanMessage(message.content))
+            else:
+                history.append(AIMessage(message.content))
+        return history
 
     @contextmanager
     def _replying_to(self, conversation_id: int) -> Iterator[None]:
@@ -163,19 +234,6 @@ async def _get_owned_conversation(
 
 async def _has_messages(session: AsyncSession, conversation_id: int) -> bool:
     return bool(await session.scalar(select(exists().where(Message.conversation_id == conversation_id))))
-
-
-async def _load_recent_history(session: AsyncSession, conversation_id: int) -> list[BaseMessage]:
-    recent = await session.scalars(
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.id.desc())
-        .limit(HISTORY_MESSAGE_LIMIT)
-    )
-    return [
-        HumanMessage(message.content) if message.role == "user" else AIMessage(message.content)
-        for message in reversed(list(recent))
-    ]
 
 
 async def _prepend(

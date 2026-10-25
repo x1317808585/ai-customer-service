@@ -2,10 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { isActionView, type ActionView } from "@/lib/actions";
 import {
   ApiError,
+  cancelAction,
+  confirmAction,
   createConversation,
   describeError,
+  getAction,
   isUnauthorized,
   listConversations,
   listMessages,
@@ -23,6 +27,8 @@ export type DisplayMessage = {
   streaming: boolean;
   /** 生成过程中的工具调用进度，只在生成期间显示，不会保存。 */
   tools: ToolProgress[];
+  /** 这条消息是确认卡片时，对应操作的当前状态 */
+  action: ActionView | null;
 };
 
 type ReplyOutcome = "done" | "failed" | "stopped" | "interrupted";
@@ -41,6 +47,7 @@ export function useChat() {
   const [replying, setReplying] = useState(false);
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [busyActionIds, setBusyActionIds] = useState<ReadonlySet<number>>(new Set());
 
   const activeIdRef = useRef<number | null>(null);
   const latestListRequest = useRef(0);
@@ -150,8 +157,8 @@ export function useChat() {
       const replyKey = `reply-${now}`;
       setMessages((previous) => [
         ...previous,
-        { key: `question-${now}`, role: "user", content: text, streaming: false, tools: [] },
-        { key: replyKey, role: "assistant", content: "", streaming: true, tools: [] },
+        { key: `question-${now}`, role: "user", content: text, streaming: false, tools: [], action: null },
+        { key: replyKey, role: "assistant", content: "", streaming: true, tools: [], action: null },
       ]);
       const updateReply = (change: (message: DisplayMessage) => DisplayMessage) =>
         setMessages((previous) =>
@@ -176,6 +183,24 @@ export function useChat() {
           } else if (event.event === "error") {
             outcome = "failed";
             failureDetail = (JSON.parse(event.data) as { detail?: string }).detail ?? null;
+          } else if (event.event === "action.proposed") {
+            // 确认卡片已经保存在服务器上了：作为一条独立消息，插在正在生成的回复前面
+            const { message_id: messageId, action } = JSON.parse(event.data) as {
+              message_id: number;
+              action: ActionView;
+            };
+            const card: DisplayMessage = {
+              key: `message-${messageId}`,
+              role: "assistant",
+              content: "",
+              streaming: false,
+              tools: [],
+              action,
+            };
+            setMessages((previous) => {
+              const replyIndex = previous.findIndex((message) => message.key === replyKey);
+              return [...previous.slice(0, replyIndex), card, ...previous.slice(replyIndex)];
+            });
           } else {
             // 正文片段、撤回草稿、工具进度，统一交给 applyReplyEvent 处理
             updateReply((message) => {
@@ -209,6 +234,57 @@ export function useChat() {
     [replying, creating, activeId, openNewConversation, refreshConversations, loadHistory, handleError],
   );
 
+  /** 用最新的操作状态替换页面上对应的卡片。 */
+  const showAction = useCallback((action: ActionView) => {
+    setMessages((previous) =>
+      previous.map((message) => (message.action?.id === action.id ? { ...message, action } : message)),
+    );
+  }, []);
+
+  /**
+   * 点击卡片上的“确认提交”或“取消”。卡片完全按服务器返回的 status 显示。
+   * 网络断开或服务器出错时，操作可能已经执行了，所以重新查询它的当前状态，而不是直接当作失败。
+   */
+  const respondToAction = useCallback(
+    async (actionId: number, decision: "confirm" | "cancel") => {
+      if (busyActionIds.has(actionId)) return;
+      setBusyActionIds((previous) => new Set(previous).add(actionId));
+      setNotice(null);
+      try {
+        showAction(await (decision === "confirm" ? confirmAction(actionId) : cancelAction(actionId)));
+      } catch (error) {
+        if (error instanceof ApiError && error.status < 500) {
+          const data = error.data as { action?: unknown } | null;
+          if (error.status === 409 && isActionView(data?.action)) showAction(data.action);
+          handleError(error);
+        } else {
+          try {
+            showAction(await getAction(actionId));
+            setNotice("刚才的请求没有收到明确结果，已重新查询并显示操作的当前状态。");
+          } catch {
+            setNotice("暂时无法确认操作结果，请稍后刷新页面查看。");
+          }
+        }
+      } finally {
+        setBusyActionIds((previous) => {
+          const next = new Set(previous);
+          next.delete(actionId);
+          return next;
+        });
+      }
+    },
+    [busyActionIds, showAction, handleError],
+  );
+
+  const confirmProposal = useCallback(
+    (actionId: number) => void respondToAction(actionId, "confirm"),
+    [respondToAction],
+  );
+  const cancelProposal = useCallback(
+    (actionId: number) => void respondToAction(actionId, "cancel"),
+    [respondToAction],
+  );
+
   const stop = useCallback(() => {
     stopRequested.current = true;
     replyRequest.current?.abort();
@@ -221,6 +297,9 @@ export function useChat() {
     replying,
     busy: replying || creating,
     notice,
+    busyActionIds,
+    confirmProposal,
+    cancelProposal,
     selectConversation,
     startNewConversation,
     send,
@@ -235,5 +314,6 @@ function toDisplayMessage(message: ChatMessage): DisplayMessage {
     content: message.content,
     streaming: false,
     tools: [],
+    action: message.action,
   };
 }

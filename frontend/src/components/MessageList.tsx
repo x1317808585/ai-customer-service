@@ -1,13 +1,17 @@
 import { useEffect, useRef } from "react";
 
+import { ActionCard } from "@/components/ActionCard";
 import type { DisplayMessage } from "@/hooks/useChat";
 import { describeToolProgress } from "@/lib/replyDraft";
 
 type Props = {
   messages: DisplayMessage[];
+  busyActionIds: ReadonlySet<number>;
+  onConfirmAction: (actionId: number) => void;
+  onCancelAction: (actionId: number) => void;
 };
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, busyActionIds, onConfirmAction, onCancelAction }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,28 +33,43 @@ export function MessageList({ messages }: Props) {
           key={message.key}
           className={`flex flex-col ${message.role === "user" ? "items-end" : "items-start"}`}
         >
-          <div
-            data-role={message.role}
-            className={`max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm leading-relaxed ${
-              message.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"
-            }`}
-          >
-            {message.streaming && message.tools.length > 0 && (
-              <ul className="mb-1 space-y-0.5 text-xs text-gray-500">
-                {message.tools.map((tool) => (
-                  <li key={tool.callId}>{describeToolProgress(tool)}</li>
-                ))}
-              </ul>
-            )}
-            {message.content}
-            {message.streaming && <span className="ml-0.5 animate-pulse">▍</span>}
-          </div>
+          {message.action ? (
+            <ActionCard
+              action={message.action}
+              busy={busyActionIds.has(message.action.id)}
+              onConfirm={onConfirmAction}
+              onCancel={onCancelAction}
+            />
+          ) : (
+            <MessageBubble message={message} />
+          )}
           {isUnanswered(messages, index) && (
             <span className="mt-1 text-xs text-gray-400">未收到回复</span>
           )}
         </div>
       ))}
       <div ref={bottomRef} />
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: DisplayMessage }) {
+  return (
+    <div
+      data-role={message.role}
+      className={`max-w-[75%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm leading-relaxed ${
+        message.role === "user" ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-900"
+      }`}
+    >
+      {message.streaming && message.tools.length > 0 && (
+        <ul className="mb-1 space-y-0.5 text-xs text-gray-500">
+          {message.tools.map((tool) => (
+            <li key={tool.callId}>{describeToolProgress(tool)}</li>
+          ))}
+        </ul>
+      )}
+      {message.content}
+      {message.streaming && <span className="ml-0.5 animate-pulse">▍</span>}
     </div>
   );
 }
