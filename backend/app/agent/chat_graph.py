@@ -16,14 +16,22 @@ SYSTEM_PROMPT = (
     "你是电商平台的 AI 客服，用简洁、礼貌的中文回答顾客的问题。\n"
     "涉及商品、订单、退货、工单的信息，必须先用工具查询，不要猜测或编造。\n"
     "工具返回的金额单位是分，回答时换算成元。工具报错时，如实告诉顾客没有查到或查询失败。\n"
-    "顾客要退货时：先查订单拿到要退商品的订单项编号（order_item_id，不是订单号），"
-    "再用 preview_return_request 生成退货申请。它只生成待确认的申请，顾客在页面上点击确认后才会提交，"
-    "所以不要说已经提交。一次回复只能发起一项申请。"
+    "以下操作都只能生成待确认的申请：页面上会出现确认卡片，顾客点击确认后才会执行，所以不要说已经完成。"
+    "一次回复只能发起一项申请。\n"
+    "- 申请退货：先查订单拿到要退商品的订单项编号（order_item_id，不是订单号），再用 preview_return_request。\n"
+    "- 撤回退货申请：先用 list_my_returns 找到退货申请编号，再用 preview_return_cancellation。只有处理中的申请能撤回。\n"
+    "- 转人工：顾客明确要求人工，或者遇到换货、质量争议、物流异常等工具处理不了的问题时，"
+    "用 preview_ticket 整理问题摘要（第三人称，写清问题和诉求，有订单就带上订单号）。"
+    "创建工单只是交给人工客服处理，不要说人工客服已经接入。"
 )
 
 # 预览工具 → 它发起的待确认操作类型。预览成功后，页面上会出现确认卡片
-PROPOSAL_TOOLS = {"preview_return_request": "return_request"}
-PROPOSAL_NOTE = "已生成待确认的申请，页面上会显示确认卡片。顾客点击确认后才会提交，现在还没有提交。"
+PROPOSAL_TOOLS = {
+    "preview_return_request": "return_request",
+    "preview_return_cancellation": "return_cancellation",
+    "preview_ticket": "ticket",
+}
+PROPOSAL_NOTE = "已生成待确认的申请，页面上会显示确认卡片。顾客点击确认后才会执行，现在还没有执行。"
 TOOL_LIMIT_REPLY = "抱歉，这个问题需要查询的内容太多，我暂时处理不了。可以换个问法，或者告诉我需要转人工。"
 
 

@@ -1,18 +1,20 @@
 """待确认操作：助手提议的业务写操作，要用户在页面上点“确认”才执行。
 
-确认接口是业务写入的唯一入口。Agent 只能通过 MCP 查询和预览，手里没有任何执行写操作的工具。
+助手发起的业务写操作，必须经用户确认接口执行；管理员操作通过管理接口鉴权后执行。
+Agent 只能通过 MCP 查询和预览，手里没有任何执行写操作的工具。
+每种操作的参数、预览、执行方式定义在 app/action_kinds.py，这里只负责通用的流程。
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, PositiveInt
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.action_kinds import ActionKindSpec
 from app.business.errors import BusinessError
-from app.business.returns import ReturnPreview, Returns
 from app.models import ActionKind, Message, PendingAction
 
 ACTION_LIFETIME = timedelta(minutes=10)
@@ -20,19 +22,19 @@ ACTION_LIFETIME = timedelta(minutes=10)
 # 对外显示的状态：数据库里的四种状态，加上“待确认但已超时”算出来的 expired
 ActionState = Literal["pending", "executed", "cancelled", "failed", "expired"]
 
-# 写给模型看的状态（下一轮对话时，模型据此回答“提交成功了吗”）
+# 写给模型看的状态（下一轮对话时，模型据此回答“提交成功了吗”）。执行成功的说明由各操作类型提供
 _STATE_TEXT: dict[ActionState, str] = {
     "pending": "等待顾客确认",
-    "executed": "已提交",
-    "cancelled": "顾客已取消",
-    "failed": "提交失败",
-    "expired": "已过期，未提交",
+    "executed": "已执行",
+    "cancelled": "顾客已取消，未执行",
+    "failed": "执行失败",
+    "expired": "已过期，未执行",
 }
 
 # 写给用户看的：为什么不能再确认或取消
 _NOT_CONFIRMABLE_TEXT: dict[ActionState, str] = {
     "pending": "这项操作还在等待确认",
-    "executed": "这项操作已经提交过了",
+    "executed": "这项操作已经执行过了",
     "failed": "这项操作已经处理过了",
     "cancelled": "这项操作已经取消了",
     "expired": "这项操作已经过期，请重新发起",
@@ -51,14 +53,12 @@ class ActionNotConfirmableError(Exception):
         self.action = action
 
 
-class ReturnRequestArguments(BaseModel):
-    """退货申请的执行参数。多余的字段直接拒绝。"""
+class UnknownActionKindError(Exception):
+    """没有这种操作类型的定义。说明代码和数据对不上，按系统错误处理，不能悄悄跳过。"""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    order_item_id: int
-    quantity: PositiveInt
-    reason: str
+    def __init__(self, kind: str) -> None:
+        super().__init__(f"未知的操作类型：{kind}")
+        self.kind = kind
 
 
 class ActionView(BaseModel):
@@ -80,17 +80,20 @@ def utc_now() -> datetime:
 
 
 class ActionService:
-    """创建、查询、确认、取消待确认操作。确认在一个事务里完成：锁操作 → 执行 → 记结果。"""
+    """创建、查询、确认、取消待确认操作。确认在一个事务里完成：锁操作 → 执行 → 记结果。
+
+    kinds 是全部操作类型的定义（由 app.action_kinds.build_action_kinds 生成）。
+    """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        returns: Returns,
+        kinds: Mapping[str, ActionKindSpec],
         clock: Callable[[], datetime] = utc_now,
         lifetime: timedelta = ACTION_LIFETIME,
     ) -> None:
         self._session_factory = session_factory
-        self._returns = returns
+        self._kinds = kinds
         self._clock = clock
         self._lifetime = lifetime
 
@@ -106,8 +109,9 @@ class ActionService:
         preview: dict[str, Any],
     ) -> PendingAction:
         """在调用方的事务里创建确认卡片消息和待确认操作（只写入，不提交）。"""
-        checked_arguments = ReturnRequestArguments.model_validate(arguments).model_dump()
-        checked_preview = ReturnPreview.model_validate(preview).model_dump()
+        spec = self._spec(kind)
+        checked_arguments = spec.arguments.model_validate(arguments).model_dump()
+        checked_preview = spec.preview.model_validate(preview).model_dump()
         card = Message(conversation_id=conversation_id, role="assistant", content="")
         session.add(card)
         await session.flush()  # 拿到卡片消息的 id
@@ -127,7 +131,7 @@ class ActionService:
         card.content = self.describe(action)
         return action
 
-    async def get(self, user_id: int, action_id: int) -> "ActionView":
+    async def get(self, user_id: int, action_id: int) -> ActionView:
         async with self._session_factory() as session:
             action = await session.scalar(
                 select(PendingAction).where(PendingAction.id == action_id, PendingAction.user_id == user_id)
@@ -136,7 +140,7 @@ class ActionService:
                 raise ActionNotFoundError
             return self.view(action)
 
-    async def confirm(self, user_id: int, action_id: int) -> "ActionView":
+    async def confirm(self, user_id: int, action_id: int) -> ActionView:
         """确认并执行。重复确认返回同一个结果；业务规则拒绝时记为 failed 并正常返回。
 
         系统错误（比如数据库断开）不捕获：整个事务回滚，操作仍是 pending，可以重试。
@@ -146,11 +150,12 @@ class ActionService:
             if action.status in ("executed", "failed"):
                 return self.view(action)
             self._ensure_still_pending(action)
+            spec = self._spec(action.kind)
 
             try:
                 # 保存点：业务写入失败时只撤回这一部分，下面记下的 failed 状态照常提交
                 async with session.begin_nested():
-                    result = await self._execute(session, action)
+                    result = await spec.execute(session, action)
             except BusinessError as error:
                 action.status, action.error = "failed", str(error)
             else:
@@ -158,14 +163,14 @@ class ActionService:
             action.resolved_at = self._clock()
             return self.view(action)
 
-    async def cancel(self, user_id: int, action_id: int) -> "ActionView":
+    async def cancel(self, user_id: int, action_id: int) -> ActionView:
         async with self._session_factory() as session, session.begin():
             action = await self._lock(session, user_id, action_id)
             self._ensure_still_pending(action)
             action.status, action.resolved_at = "cancelled", self._clock()
             return self.view(action)
 
-    def view(self, action: PendingAction) -> "ActionView":
+    def view(self, action: PendingAction) -> ActionView:
         return ActionView(
             id=action.id,
             kind=action.kind,
@@ -178,18 +183,21 @@ class ActionService:
 
     def describe(self, action: PendingAction) -> str:
         """给模型看的一句话，按当前状态生成。下一轮对话时模型据此回答“提交成功了吗”。"""
-        preview = ReturnPreview.model_validate(action.preview)
+        spec = self._spec(action.kind)
         state = self._state_of(action)
-        detail = _STATE_TEXT[state]
         if state == "executed" and action.result:
-            detail += f"，退货单号 {action.result['return_id']}"
+            detail = spec.done_text(action.result)
         elif state == "failed" and action.error:
-            detail += f"：{action.error}"
-        return (
-            f"（退货申请：订单 {preview.order_id} 的订单项 {preview.order_item_id}「{preview.product_name}」"
-            f" × {preview.quantity}，退款 {format_cents(preview.refund_cents)} 元，原因：{preview.reason}。"
-            f"状态：{detail}）"
-        )
+            detail = f"{_STATE_TEXT['failed']}：{action.error}"
+        else:
+            detail = _STATE_TEXT[state]
+        return f"（{spec.title}：{spec.describe(spec.preview.model_validate(action.preview))}。状态：{detail}）"
+
+    def _spec(self, kind: str) -> ActionKindSpec:
+        spec = self._kinds.get(kind)
+        if spec is None:
+            raise UnknownActionKindError(kind)
+        return spec
 
     async def _lock(self, session: AsyncSession, user_id: int, action_id: int) -> PendingAction:
         """锁住这条操作：确认、取消、重复点击都在这里排队。先查归属，不是本人的一律当作不存在。"""
@@ -211,21 +219,3 @@ class ActionService:
         if action.status == "pending" and self._clock() > action.expires_at:
             return "expired"
         return action.status
-
-    async def _execute(self, session: AsyncSession, action: PendingAction) -> dict[str, Any]:
-        """按保存的参数执行。会先锁住业务数据、按最新数据重新计算，和用户确认过的预览不一致就拒绝。"""
-        arguments = ReturnRequestArguments.model_validate(action.arguments)
-        created = await self._returns.request_return_in(
-            session,
-            action.user_id,
-            arguments.order_item_id,
-            arguments.quantity,
-            arguments.reason,
-            expected=ReturnPreview.model_validate(action.preview),
-        )
-        return {"return_id": created.id}
-
-
-def format_cents(cents: int) -> str:
-    """59900 → "599.00"。用整数运算，不经过小数。"""
-    return f"{cents // 100}.{cents % 100:02d}"

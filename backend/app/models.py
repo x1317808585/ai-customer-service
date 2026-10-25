@@ -10,7 +10,7 @@ MessageRole = Literal["user", "assistant"]
 OrderStatus = Literal["placed", "shipped", "delivered", "cancelled"]
 ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
 TicketStatus = Literal["open", "closed"]
-ActionKind = Literal["return_request"]
+ActionKind = Literal["return_request", "return_cancellation", "ticket"]
 ActionStatus = Literal["pending", "executed", "cancelled", "failed"]
 
 CreatedAt = Annotated[
@@ -152,6 +152,10 @@ class Ticket(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), index=True)
+    # 工单来自哪个会话（人工客服据此查看聊天记录）。会话删除后置空，工单保留
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), index=True
+    )
     summary: Mapped[str] = mapped_column(String(1000))
     status: Mapped[TicketStatus] = mapped_column(String(16))
     created_at: Mapped[CreatedAt]
@@ -162,7 +166,9 @@ class PendingAction(Base):
 
     __tablename__ = "pending_actions"
     __table_args__ = (
-        CheckConstraint("kind IN ('return_request')", name="ck_pending_actions_kind"),
+        CheckConstraint(
+            "kind IN ('return_request', 'return_cancellation', 'ticket')", name="ck_pending_actions_kind"
+        ),
         CheckConstraint(
             "status IN ('pending', 'executed', 'cancelled', 'failed')", name="ck_pending_actions_status"
         ),

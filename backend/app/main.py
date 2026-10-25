@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.action_kinds import build_action_kinds
 from app.actions import ActionNotConfirmableError, ActionNotFoundError, ActionService
 from app.agent.llm import create_chat_model
 from app.agent.mcp_toolbox import McpToolbox
@@ -18,6 +19,7 @@ from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.trusted_origin import TrustedOriginMiddleware
 from app.business.returns import Returns
+from app.business.tickets import Tickets
 from app.config import Settings, get_settings
 from app.conversations import (
     ConversationBusyError,
@@ -42,7 +44,8 @@ def create_app(
         reply_agent = ReplyAgent(
             chat_model or create_chat_model(app_settings), toolbox or McpToolbox(app_settings)
         )
-        action_service = ActionService(session_factory, Returns(session_factory))
+        action_kinds = build_action_kinds(Returns(session_factory), Tickets(session_factory))
+        action_service = ActionService(session_factory, action_kinds)
 
         app.state.session_factory = session_factory
         app.state.action_service = action_service

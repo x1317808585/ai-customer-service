@@ -29,20 +29,23 @@ def imports_any(modules: set[str], forbidden: str) -> bool:
 def test_business_layer_does_not_depend_on_web_framework_api_or_mcp() -> None:
     modules = imported_modules("business")
 
-    for forbidden in ("fastapi", "starlette", "mcp", "app.api", "app.mcp_server"):
+    for forbidden in ("fastapi", "starlette", "mcp", "app.api", "app.mcp_server", "app.actions", "app.action_kinds"):
         assert not imports_any(modules, forbidden), f"app/business 不应该 import {forbidden}"
 
 
 def test_agent_reaches_business_data_only_through_mcp() -> None:
     modules = imported_modules("agent")
 
-    for forbidden in ("app.business", "app.mcp_server", "app.actions"):
+    for forbidden in ("app.business", "app.mcp_server", "app.actions", "app.action_kinds"):
         assert not imports_any(modules, forbidden), f"app/agent 不应该 import {forbidden}"
 
 
 def test_mcp_server_cannot_reach_the_confirmation_entry() -> None:
-    """执行写操作的唯一入口是确认接口（app.actions），模型能用到的 MCP Server 不能碰它。"""
-    assert not imports_any(imported_modules("mcp_server"), "app.actions")
+    """助手发起的写操作只能经确认接口执行（app.actions 和它用到的 app.action_kinds），模型能用到的 MCP Server 不能碰。"""
+    modules = imported_modules("mcp_server")
+
+    for forbidden in ("app.actions", "app.action_kinds"):
+        assert not imports_any(modules, forbidden), f"app/mcp_server 不应该 import {forbidden}"
 
 
 def test_every_business_exception_is_a_business_error() -> None:

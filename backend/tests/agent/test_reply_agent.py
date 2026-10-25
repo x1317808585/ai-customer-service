@@ -212,7 +212,6 @@ async def test_stopping_midway_cancels_the_tool_and_closes_the_toolbox() -> None
     assert (toolbox.opened, toolbox.closed) == (1, 1)
 
 
-
 # ---------- 发起待确认操作 ----------
 
 PREVIEW = {
@@ -275,3 +274,38 @@ async def test_failed_preview_proposes_nothing() -> None:
 
     assert proposals(events) == []
     assert final_text(events) == "不能退"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "kind", "arguments"),
+    [
+        ("preview_return_request", "return_request", RETURN_ARGS),
+        ("preview_return_cancellation", "return_cancellation", {"return_id": 3}),
+        ("preview_ticket", "ticket", {"summary": "顾客反馈耳机左耳没声音，希望换货", "order_id": 5}),
+    ],
+)
+async def test_each_preview_tool_proposes_its_own_kind(tool_name: str, kind: str, arguments: dict[str, Any]) -> None:
+    preview = {"anything": "服务器算出的预览"}
+    tool, received = preview_tool(preview, name=tool_name)
+    model = ScriptedChatModel(respond=in_order(calls_tools((tool_name, arguments)), AIMessage("请在上方确认")))
+
+    events = await collect(ReplyAgent(model, FakeToolbox([tool])))
+
+    assert proposals(events) == [ActionProposed(kind, arguments, preview)]
+    assert received == [arguments]
+
+
+async def test_one_proposal_per_reply_across_different_kinds() -> None:
+    return_tool, _ = preview_tool(PREVIEW)
+    ticket_tool, ticket_received = preview_tool({"order_id": None, "summary": "要人工"}, name="preview_ticket")
+    model = ScriptedChatModel(
+        respond=in_order(
+            calls_tools(("preview_return_request", RETURN_ARGS), ("preview_ticket", {"summary": "要人工"})),
+            AIMessage("请确认"),
+        )
+    )
+
+    events = await collect(ReplyAgent(model, FakeToolbox([return_tool, ticket_tool])))
+
+    assert [proposal.kind for proposal in proposals(events)] == ["return_request"]
+    assert ticket_received == []

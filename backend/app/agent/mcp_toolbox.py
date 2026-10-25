@@ -21,6 +21,8 @@ ALLOWED_TOOLS = frozenset(
         "list_my_tickets",
         "check_return_eligibility",
         "preview_return_request",
+        "preview_return_cancellation",
+        "preview_ticket",
     }
 )
 MCP_HTTP_TIMEOUT_SECONDS = 15

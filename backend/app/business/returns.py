@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import joinedload
 
@@ -68,9 +68,18 @@ class ReturnPreviewChangedError(BusinessError):
         super().__init__("退货内容和确认时不一致，请重新发起")
 
 
+# 退货申请处理完之后的状态，用在给顾客看的提示里
+_FINISHED_TEXT: dict[ReturnStatus, str] = {
+    "pending": "还在处理中",
+    "completed": "已经完成",
+    "rejected": "已经被拒绝",
+    "cancelled": "已经撤回",
+}
+
+
 class ReturnNotPendingError(BusinessError):
     def __init__(self, status: ReturnStatus) -> None:
-        super().__init__(f"退货申请已经是 {status} 状态，不能再处理")
+        super().__init__(f"退货申请{_FINISHED_TEXT[status]}，不能再处理")
         self.status = status
 
 
@@ -128,6 +137,19 @@ class ReturnPreview(BaseModel):
     quantity: int
     refund_cents: int
     reason: str
+
+
+class ReturnCancellationPreview(BaseModel):
+    """将要撤回的退货申请。退货单创建后内容不会再变，所以执行时只需重新检查状态。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    return_id: int
+    order_id: int
+    order_item_id: int
+    product_name: str
+    quantity: int
+    refund_cents: int
 
 
 @dataclass(frozen=True)
@@ -299,9 +321,30 @@ class Returns:
         if quantity > facts.remaining:
             raise ReturnQuantityExceededError(quantity, facts.remaining)
 
+    async def preview_cancellation(self, user_id: int, return_id: int) -> ReturnCancellationPreview:
+        """检查这条退货申请现在能不能撤回，返回将要撤回的内容。不加锁，也不写入。"""
+        async with self._session_factory() as session:
+            request = await session.scalar(_return_query(return_id, owner_id=user_id))
+        if request is None:
+            raise ReturnNotFoundError(return_id)
+        if request.status != "pending":
+            raise ReturnNotPendingError(request.status)
+        return ReturnCancellationPreview(
+            return_id=request.id,
+            order_id=request.order_item.order_id,
+            order_item_id=request.order_item_id,
+            product_name=request.order_item.product_name,
+            quantity=request.quantity,
+            refund_cents=request.refund_cents,
+        )
+
     async def cancel_return(self, user_id: int, return_id: int) -> ReturnView:
-        """顾客撤回自己还在处理中的退货申请。"""
+        """顾客撤回自己还在处理中的退货申请（自己开一个事务）。"""
         return await self._finish(return_id, "cancelled", owner_id=user_id)
+
+    async def cancel_return_in(self, session: AsyncSession, user_id: int, return_id: int) -> ReturnView:
+        """在调用方的事务里撤回退货申请：只写入，不提交。库存不变（只有完成退货才放回库存）。"""
+        return await self._finish_in(session, return_id, "cancelled", owner_id=user_id)
 
     async def complete_return(self, return_id: int) -> ReturnView:
         """客服确认收到退货：申请变为已完成，商品放回库存。"""
@@ -313,30 +356,39 @@ class Returns:
 
     async def _finish(self, return_id: int, status: ReturnStatus, owner_id: int | None = None) -> ReturnView:
         async with self._session_factory() as session, session.begin():
-            # 锁住这条申请：两个人同时点"完成"时，后一个会看到它已经不是 pending，不会重复入库。
-            query = (
-                select(ReturnRequest)
-                .join(ReturnRequest.order_item)
-                .join(Order, Order.id == OrderItem.order_id)
-                .where(ReturnRequest.id == return_id)
-                .options(joinedload(ReturnRequest.order_item))
-                .with_for_update(of=ReturnRequest)
+            return await self._finish_in(session, return_id, status, owner_id)
+
+    async def _finish_in(
+        self, session: AsyncSession, return_id: int, status: ReturnStatus, owner_id: int | None = None
+    ) -> ReturnView:
+        # 锁住这条申请：两个人同时处理（比如顾客撤回、客服完成）时，后一个会看到它已经不是 pending。
+        request = await session.scalar(_return_query(return_id, owner_id).with_for_update(of=ReturnRequest))
+        if request is None:
+            raise ReturnNotFoundError(return_id)
+        if request.status != "pending":
+            raise ReturnNotPendingError(request.status)
+
+        request.status = status
+        request.resolved_at = self._clock()
+        if status == "completed":
+            await session.execute(
+                update(Product)
+                .where(Product.id == request.order_item.product_id)
+                .values(stock=Product.stock + request.quantity)
             )
-            if owner_id is not None:
-                query = query.where(Order.user_id == owner_id)
-            request = await session.scalar(query)
-            if request is None:
-                raise ReturnNotFoundError(return_id)
-            if request.status != "pending":
-                raise ReturnNotPendingError(request.status)
-
-            request.status = status
-            request.resolved_at = self._clock()
-            if status == "completed":
-                await session.execute(
-                    update(Product)
-                    .where(Product.id == request.order_item.product_id)
-                    .values(stock=Product.stock + request.quantity)
-                )
-
+        await session.flush()
         return ReturnView.of(request)
+
+
+def _return_query(return_id: int, owner_id: int | None) -> Select[tuple[ReturnRequest]]:
+    """查一条退货申请（连同订单项）。owner_id 不为空时，只查这个顾客自己的。"""
+    query = (
+        select(ReturnRequest)
+        .join(ReturnRequest.order_item)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(ReturnRequest.id == return_id)
+        .options(joinedload(ReturnRequest.order_item))
+    )
+    if owner_id is not None:
+        query = query.where(Order.user_id == owner_id)
+    return query

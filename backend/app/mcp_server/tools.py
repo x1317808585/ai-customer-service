@@ -13,8 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.business.catalog import Catalog, ProductView
 from app.business.errors import BusinessError
 from app.business.orders import Orders, OrderView
-from app.business.returns import ReturnEligibility, ReturnPreview, Returns, ReturnView
-from app.business.tickets import Tickets, TicketView
+from app.business.returns import (
+    ReturnCancellationPreview,
+    ReturnEligibility,
+    ReturnPreview,
+    Returns,
+    ReturnView,
+)
+from app.business.tickets import TicketPreview, Tickets, TicketView
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +97,6 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
         """列出当前顾客提交过的转人工工单。"""
         return await tickets.list_tickets(current_user_id())
 
-    
     @mcp.tool(annotations=READ_ONLY)
     @hide_system_errors
     async def check_return_eligibility(
@@ -112,3 +117,28 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
         只生成预览，不会提交。顾客在页面上确认后，系统才会真正提交。
         """
         return await returns.preview_return(current_user_id(), order_item_id, quantity, reason)
+
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def preview_return_cancellation(
+        return_id: Annotated[int, Field(description="退货申请编号（list_my_returns 里的 id）")],
+    ) -> ReturnCancellationPreview:
+        """检查当前顾客的一条退货申请能不能撤回（只有处理中的可以），返回将要撤回的内容。
+
+        只生成预览，不会撤回。顾客在页面上确认后，系统才会真正撤回。
+        """
+        return await returns.preview_cancellation(current_user_id(), return_id)
+
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def preview_ticket(
+        summary: Annotated[
+            str, Field(description="交给人工客服的问题摘要：用第三人称写清顾客遇到的问题和诉求，不超过 1000 字")
+        ],
+        order_id: Annotated[int | None, Field(description="相关的订单号，没有就不填")] = None,
+    ) -> TicketPreview:
+        """检查转人工工单的内容，返回将要创建的工单。
+
+        只生成预览，不会创建。顾客在页面上确认后，系统才会创建工单，交给人工客服处理。
+        """
+        return await tickets.preview_ticket(current_user_id(), summary, order_id)

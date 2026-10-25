@@ -9,9 +9,10 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Order, Product, ReturnRequest, User
+from app.business.returns import Returns
+from app.models import Order, Product, ReturnRequest, Ticket, User
 from tests.agent.doubles import ScriptedChatModel, calls_tools
-from tests.api.chat_api import SseEvent, create_conversation, get_history, send_message
+from tests.api.chat_api import SseEvent, create_conversation, displayed_text, get_history, send_message
 
 OpenClient = Callable[..., AbstractAsyncContextManager[AsyncClient]]
 AddProduct = Callable[..., Awaitable[int]]
@@ -213,3 +214,53 @@ async def test_offline_model_proposes_a_return_for_an_explicit_order_item(
 
     action = proposed_action(events)
     assert (action["preview"]["order_item_id"], action["preview"]["quantity"]) == (earbuds_item, 1)
+
+
+# ---------- 转人工、撤回退货（离线模型 + 真实 MCP） ----------
+
+
+async def test_ticket_card_confirm_creates_a_ticket_from_this_conversation(
+    open_client: OpenClient,
+    users: dict[str, User],
+    add_product: AddProduct,
+    add_order: AddOrder,
+    session_factory: SessionFactory,
+) -> None:
+    product = await add_product("SoundPods 降噪耳机")
+    order = await add_order(users["alice"].id, product, status="shipped")
+
+    async with open_client() as client:
+        conversation_id = await create_conversation(client)
+        events = await send_message(client, conversation_id, f"转人工 订单 {order.id}，耳机左边没声音")
+        action = proposed_action(events)
+        confirmed = (await client.post(f"/api/actions/{action['id']}/confirm")).json()
+        history = await get_history(client, conversation_id)
+
+    assert action["kind"] == "ticket"
+    assert action["preview"] == {"order_id": order.id, "summary": f"转人工 订单 {order.id}，耳机左边没声音"}
+    assert confirmed["status"] == "executed"
+    async with session_factory() as session:
+        ticket = await session.get_one(Ticket, confirmed["result"]["ticket_id"])
+    assert (ticket.conversation_id, ticket.order_id) == (conversation_id, order.id)
+    assert history[1]["action"]["status"] == "executed"
+
+
+async def test_cancellation_card_confirm_cancels_the_return_and_cannot_repeat(
+    open_client: OpenClient, users: dict[str, User], earbuds_item: int, session_factory: SessionFactory
+) -> None:
+    returns = Returns(session_factory)
+    request = await returns.request_return(users["alice"].id, earbuds_item, quantity=1, reason="坏了")
+
+    async with open_client() as client:
+        conversation_id = await create_conversation(client)
+        events = await send_message(client, conversation_id, f"撤回退货 {request.id}")
+        action = proposed_action(events)
+        confirmed = (await client.post(f"/api/actions/{action['id']}/confirm")).json()
+        again = await send_message(client, conversation_id, f"撤回退货 {request.id}")
+
+    assert (action["kind"], action["preview"]["return_id"]) == ("return_cancellation", request.id)
+    assert (confirmed["status"], confirmed["result"]) == ("executed", {"return_id": request.id})
+    async with session_factory() as session:
+        assert (await session.get_one(ReturnRequest, request.id)).status == "cancelled"
+    assert "action.proposed" not in [name for name, _data in again]
+    assert displayed_text(again) == "（离线模式）无法撤回：退货申请已经撤回，不能再处理。"

@@ -28,6 +28,8 @@ READ_TOOLS = {
     "list_my_tickets",
     "check_return_eligibility",
     "preview_return_request",
+    "preview_return_cancellation",
+    "preview_ticket",
 }
 
 
@@ -156,6 +158,7 @@ async def test_read_tools_do_not_change_any_data(
 ) -> None:
     owned = await give_customer_some_history(users["alice"], add_product, add_order, session_factory)
     order_id = next(iter(owned["orders"]))
+    return_id = next(iter(owned["returns"]))
     before = await database_snapshot(session_factory)
 
     async with open_mcp_session("alice") as session:
@@ -169,6 +172,8 @@ async def test_read_tools_do_not_change_any_data(
             "list_my_tickets": {},
             "check_return_eligibility": {"order_item_id": item_id},
             "preview_return_request": {"order_item_id": item_id, "quantity": 1, "reason": "坏了"},
+            "preview_return_cancellation": {"return_id": return_id},
+            "preview_ticket": {"summary": "顾客要求人工处理", "order_id": order_id},
         }
         for name, arguments in calls.items():
             data_of(await session.call_tool(name, arguments))
@@ -243,3 +248,39 @@ async def test_cannot_preview_a_return_for_someone_elses_item(
 
     assert result.isError
     assert f"订单项 {order.items[0].id} 不存在" in error_text(result)
+
+
+async def test_preview_cancelling_own_return_but_not_someone_elses(
+    open_mcp_session: OpenMcpSession,
+    users: dict[str, User],
+    add_product: AddProduct,
+    add_order: AddOrder,
+    session_factory: SessionFactory,
+) -> None:
+    owned = await give_customer_some_history(users["alice"], add_product, add_order, session_factory)
+    return_id = next(iter(owned["returns"]))
+
+    async with open_mcp_session("alice") as session:
+        preview = data_of(await session.call_tool("preview_return_cancellation", {"return_id": return_id}))
+    async with open_mcp_session("bob") as session:
+        refused = await session.call_tool("preview_return_cancellation", {"return_id": return_id})
+
+    assert (preview["return_id"], preview["product_name"], preview["quantity"]) == (return_id, "alice 买的耳机", 1)
+    assert refused.isError
+    assert f"退货申请 {return_id} 不存在" in error_text(refused)
+
+
+async def test_preview_ticket_with_and_without_an_order(
+    open_mcp_session: OpenMcpSession, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机")
+    order = await add_order(users["alice"].id, earbuds, status="shipped")
+
+    async with open_mcp_session("alice") as session:
+        about_order = data_of(
+            await session.call_tool("preview_ticket", {"summary": " 顾客反馈物流三天没更新 ", "order_id": order.id})
+        )
+        general = data_of(await session.call_tool("preview_ticket", {"summary": "顾客想咨询企业采购"}))
+
+    assert about_order == {"order_id": order.id, "summary": "顾客反馈物流三天没更新"}
+    assert general == {"order_id": None, "summary": "顾客想咨询企业采购"}

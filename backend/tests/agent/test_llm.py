@@ -117,7 +117,6 @@ async def test_offline_model_summarizes_tool_results(
     assert reply.text == expected
 
 
-
 async def test_offline_model_previews_a_return_only_for_an_explicit_order_item() -> None:
     model = offline_model("preview_return_request", "list_my_returns")
 
@@ -131,24 +130,58 @@ async def test_offline_model_previews_a_return_only_for_an_explicit_order_item()
 
 
 @pytest.mark.parametrize(
-    ("text", "status", "expected"),
+    ("question", "tool_name", "arguments"),
     [
-        ("（预览内容）", "success", "（离线模式）已生成退货申请，请在上方的卡片里确认。"),
+        ("转人工 订单 5，耳机左边没声音", "preview_ticket", {"summary": "转人工 订单 5，耳机左边没声音", "order_id": 5}),
+        ("我要转人工", "preview_ticket", {"summary": "我要转人工"}),
+        ("撤回退货 3", "preview_return_cancellation", {"return_id": 3}),
+        ("撤回退货申请 12", "preview_return_cancellation", {"return_id": 12}),
+    ],
+    ids=["ticket-with-order", "ticket", "cancel-return", "cancel-return-long"],
+)
+async def test_offline_model_proposes_tickets_and_return_cancellations(
+    question: str, tool_name: str, arguments: dict[str, object]
+) -> None:
+    model = offline_model("preview_ticket", "preview_return_cancellation", "preview_return_request", "list_my_returns")
+
+    reply = await model.ainvoke([HumanMessage(question)])
+
+    assert [(call["name"], call["args"]) for call in reply.tool_calls] == [(tool_name, arguments)]
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "text", "status", "expected"),
+    [
+        ("preview_return_request", "（预览内容）", "success", "（离线模式）已生成退货申请，请在上方的卡片里确认。"),
         (
+            "preview_return_request",
             "Error executing tool preview_return_request: 已超过签收后 7 天的退货期",
             "error",
             "（离线模式）无法申请退货：已超过签收后 7 天的退货期。",
         ),
+        (
+            "preview_return_cancellation",
+            "（预览内容）",
+            "success",
+            "（离线模式）已生成撤回退货的申请，请在上方的卡片里确认。",
+        ),
+        (
+            "preview_return_cancellation",
+            "Error executing tool preview_return_cancellation: 退货申请已经撤回，不能再处理",
+            "error",
+            "（离线模式）无法撤回：退货申请已经撤回，不能再处理。",
+        ),
+        ("preview_ticket", "（预览内容）", "success", "（离线模式）已整理好转人工的问题，请在上方的卡片里确认。"),
     ],
-    ids=["previewed", "refused"],
+    ids=["return-previewed", "return-refused", "cancel-previewed", "cancel-refused", "ticket-previewed"],
 )
-async def test_offline_model_explains_the_return_preview(text: str, status: str, expected: str) -> None:
+async def test_offline_model_explains_the_preview(tool_name: str, text: str, status: str, expected: str) -> None:
     history = [
-        HumanMessage("退货 订单项 3"),
-        AIMessage("", tool_calls=[{"name": "preview_return_request", "args": {}, "id": "call-1"}]),
-        ToolMessage(text, tool_call_id="call-1", name="preview_return_request", status=status),
+        HumanMessage("（用户的话）"),
+        AIMessage("", tool_calls=[{"name": tool_name, "args": {}, "id": "call-1"}]),
+        ToolMessage(text, tool_call_id="call-1", name=tool_name, status=status),
     ]
 
-    reply = await offline_model("preview_return_request").ainvoke(history)
+    reply = await offline_model(tool_name).ainvoke(history)
 
     assert reply.text == expected
