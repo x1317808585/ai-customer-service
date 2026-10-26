@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import type { Conversation } from "@/lib/customer/api";
 
 type Props = {
@@ -5,6 +7,8 @@ type Props = {
   activeId: number | null;
   disabled: boolean;
   username: string;
+  /** 管理员在聊天页测试助手时，显示回到管理工作台的入口 */
+  showAdminEntry: boolean;
   onSelect: (conversationId: number) => void;
   onCreate: () => void;
   onLogOut: () => void;
@@ -15,6 +19,7 @@ export function ConversationSidebar({
   activeId,
   disabled,
   username,
+  showAdminEntry,
   onSelect,
   onCreate,
   onLogOut,
@@ -44,11 +49,18 @@ export function ConversationSidebar({
           </button>
         ))}
       </nav>
-      <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3 text-sm">
+      <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-4 py-3 text-sm">
         <span className="truncate text-gray-600">{username}</span>
-        <button type="button" onClick={onLogOut} className="text-gray-500 hover:text-gray-900">
-          退出
-        </button>
+        <div className="flex shrink-0 gap-3">
+          {showAdminEntry && (
+            <Link href="/admin" className="text-blue-600 hover:text-blue-800">
+              管理工作台
+            </Link>
+          )}
+          <button type="button" onClick={onLogOut} className="text-gray-500 hover:text-gray-900">
+            退出
+          </button>
+        </div>
       </div>
     </aside>
   );

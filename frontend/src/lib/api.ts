@@ -87,6 +87,6 @@ function describeFailure(status: number, data: unknown): string {
   if (typeof data === "object" && data !== null && "detail" in data && typeof data.detail === "string") {
     return data.detail;
   }
-  if (status === 422) return "消息内容不符合要求，请检查后重试";
+  if (status === 422) return "输入内容不符合要求，请检查后重试";
   return `请求失败（${status}）`;
 }

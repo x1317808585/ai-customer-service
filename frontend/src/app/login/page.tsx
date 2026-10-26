@@ -15,8 +15,9 @@ export default function LoginPage() {
     setSubmitting(true);
     setError(null);
     try {
-      await login(username, password);
-      window.location.replace("/");
+      const user = await login(username, password);
+      // 按角色进入各自的主页：顾客进聊天页，管理员进管理工作台
+      window.location.replace(user.role === "admin" ? "/admin" : "/");
     } catch (reason) {
       setError(describeError(reason));
       setSubmitting(false);

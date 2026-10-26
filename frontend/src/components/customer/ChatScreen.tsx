@@ -21,6 +21,7 @@ export function ChatScreen({ user, onLogOut }: Props) {
         activeId={chat.activeId}
         disabled={chat.busy}
         username={user.username}
+        showAdminEntry={user.role === "admin"}
         onSelect={chat.selectConversation}
         onCreate={chat.startNewConversation}
         onLogOut={onLogOut}

@@ -35,6 +35,7 @@ export function MessageList({ messages, busyActionIds, onConfirmAction, onCancel
         >
           {message.action ? (
             <ActionCard
+              mode="interactive"
               action={message.action}
               busy={busyActionIds.has(message.action.id)}
               onConfirm={onConfirmAction}

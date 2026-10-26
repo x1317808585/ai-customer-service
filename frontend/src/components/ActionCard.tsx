@@ -11,17 +11,24 @@ import {
   type TicketPreview,
 } from "@/lib/actions";
 
-type Props = {
-  action: ActionView;
-  busy: boolean;
-  onConfirm: (actionId: number) => void;
-  onCancel: (actionId: number) => void;
-};
+/**
+ * readonly：只显示内容和状态，没有按钮（管理端查看聊天记录时用，管理员不能替顾客确认）。
+ * interactive：待确认时显示确认和取消按钮（顾客的聊天页用）。
+ */
+type Props =
+  | { mode: "readonly"; action: ActionView }
+  | {
+      mode: "interactive";
+      action: ActionView;
+      busy: boolean;
+      onConfirm: (actionId: number) => void;
+      onCancel: (actionId: number) => void;
+    };
 
 /** 待确认操作的卡片。内容全部来自服务器计算的预览，不来自模型说的话。 */
-export function ActionCard({ action, busy, onConfirm, onCancel }: Props) {
+export function ActionCard(props: Props) {
+  const { action } = props;
   const texts = actionTexts(action);
-  const pending = canRespond(action);
 
   return (
     <div
@@ -39,7 +46,7 @@ export function ActionCard({ action, busy, onConfirm, onCancel }: Props) {
         {describeActionOutcome(action)}
       </p>
 
-      {pending && (
+      {props.mode === "interactive" && canRespond(action) && (
         <div className="mt-3 flex items-center justify-between gap-2">
           <span className="text-xs text-gray-400">
             {new Date(action.expires_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 前有效
@@ -47,19 +54,19 @@ export function ActionCard({ action, busy, onConfirm, onCancel }: Props) {
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={busy}
-              onClick={() => onCancel(action.id)}
+              disabled={props.busy}
+              onClick={() => props.onCancel(action.id)}
               className="rounded-lg border border-gray-300 px-3 py-1 text-gray-600 disabled:opacity-50"
             >
               {texts.dismissLabel}
             </button>
             <button
               type="button"
-              disabled={busy}
-              onClick={() => onConfirm(action.id)}
+              disabled={props.busy}
+              onClick={() => props.onConfirm(action.id)}
               className="rounded-lg bg-blue-600 px-3 py-1 text-white disabled:opacity-50"
             >
-              {busy ? "处理中…" : texts.confirmLabel}
+              {props.busy ? "处理中…" : texts.confirmLabel}
             </button>
           </div>
         </div>
