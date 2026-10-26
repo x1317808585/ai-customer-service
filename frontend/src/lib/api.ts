@@ -1,3 +1,9 @@
+/**
+ * 顾客端和管理端共用的部分：请求后端的方法、错误类型、登录和当前用户。
+ *
+ * 只有一端用到的接口放在 lib/customer/api.ts 或 lib/admin/api.ts。
+ */
+
 import type { ActionView } from "@/lib/actions";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
@@ -8,12 +14,7 @@ export type User = {
   role: "customer" | "admin";
 };
 
-export type Conversation = {
-  id: number;
-  title: string;
-  created_at: string;
-};
-
+/** 会话里的一条消息。顾客的聊天页和管理端查看的聊天记录都是这个格式。 */
 export type ChatMessage = {
   id: number;
   role: "user" | "assistant";
@@ -57,53 +58,12 @@ export async function getCurrentUser(): Promise<User> {
   return (await request("/api/auth/me")).json();
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  return (await request("/api/conversations")).json();
-}
-
-export async function createConversation(): Promise<Conversation> {
-  return (await request("/api/conversations", { method: "POST" })).json();
-}
-
-export async function listMessages(
-  conversationId: number,
-  signal?: AbortSignal,
-): Promise<ChatMessage[]> {
-  return (await request(`/api/conversations/${conversationId}/messages`, { signal })).json();
-}
-
-/** 发送消息，返回回复的 SSE 字节流。 */
-export async function sendMessage(
-  conversationId: number,
-  content: string,
-  signal: AbortSignal,
-): Promise<ReadableStream<Uint8Array>> {
-  const response = await request(`/api/conversations/${conversationId}/messages`, {
-    ...jsonBody("POST", { content }),
-    signal,
-  });
-  if (!response.body) throw new Error("响应没有内容");
-  return response.body;
-}
-
-export async function getAction(actionId: number): Promise<ActionView> {
-  return (await request(`/api/actions/${actionId}`)).json();
-}
-
-/** 确认并执行。返回 200 不代表已提交，要看返回的 status 是 executed 还是 failed。 */
-export async function confirmAction(actionId: number): Promise<ActionView> {
-  return (await request(`/api/actions/${actionId}/confirm`, { method: "POST" })).json();
-}
-
-export async function cancelAction(actionId: number): Promise<ActionView> {
-  return (await request(`/api/actions/${actionId}/cancel`, { method: "POST" })).json();
-}
-
-function jsonBody(method: string, body: unknown): RequestInit {
+export function jsonBody(method: string, body: unknown): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-async function request(path: string, init?: RequestInit): Promise<Response> {
+/** 请求后端接口，自动带上登录 Cookie。非 2xx 时抛出 ApiError。 */
+export async function request(path: string, init?: RequestInit): Promise<Response> {
   if (!API_BASE_URL) {
     throw new Error("缺少 NEXT_PUBLIC_API_BASE_URL，请把 frontend/.env.example 复制为 .env.local");
   }

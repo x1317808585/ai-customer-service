@@ -1,4 +1,4 @@
-import type { SseEvent } from "@/lib/sse";
+import type { SseEvent } from "@/lib/customer/sse";
 
 export type ToolCallStatus = "running" | "succeeded" | "failed";
 

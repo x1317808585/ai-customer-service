@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 
 import { ActionCard } from "@/components/ActionCard";
-import type { DisplayMessage } from "@/hooks/useChat";
-import { describeToolProgress } from "@/lib/replyDraft";
+import type { DisplayMessage } from "@/hooks/customer/useChat";
+import { describeToolProgress } from "@/lib/customer/replyDraft";
 
 type Props = {
   messages: DisplayMessage[];

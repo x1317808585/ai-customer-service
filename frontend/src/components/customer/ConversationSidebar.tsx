@@ -1,4 +1,4 @@
-import type { Conversation } from "@/lib/api";
+import type { Conversation } from "@/lib/customer/api";
 
 type Props = {
   conversations: Conversation[];

@@ -3,22 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isActionView, type ActionView } from "@/lib/actions";
+import { ApiError, describeError, isUnauthorized, type ChatMessage } from "@/lib/api";
 import {
-  ApiError,
   cancelAction,
   confirmAction,
   createConversation,
-  describeError,
   getAction,
-  isUnauthorized,
   listConversations,
   listMessages,
   sendMessage,
-  type ChatMessage,
   type Conversation,
-} from "@/lib/api";
-import { applyReplyEvent, type ToolProgress } from "@/lib/replyDraft";
-import { readSseEvents } from "@/lib/sse";
+} from "@/lib/customer/api";
+import { applyReplyEvent, type ToolProgress } from "@/lib/customer/replyDraft";
+import { readSseEvents } from "@/lib/customer/sse";
 
 export type DisplayMessage = {
   key: string;

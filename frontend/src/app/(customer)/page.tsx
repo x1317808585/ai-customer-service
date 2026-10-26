@@ -1,6 +1,6 @@
 "use client";
 
-import { ChatScreen } from "@/components/ChatScreen";
+import { ChatScreen } from "@/components/customer/ChatScreen";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 export default function ChatPage() {

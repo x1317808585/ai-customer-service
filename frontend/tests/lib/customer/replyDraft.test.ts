@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { applyReplyEvent, describeToolProgress, EMPTY_DRAFT, type ReplyDraft } from "@/lib/replyDraft";
-import type { SseEvent } from "@/lib/sse";
+import { applyReplyEvent, describeToolProgress, EMPTY_DRAFT, type ReplyDraft } from "@/lib/customer/replyDraft";
+import type { SseEvent } from "@/lib/customer/sse";
 
 const delta = (text: string): SseEvent => ({ event: "message.delta", data: JSON.stringify({ text }) });
 const discard: SseEvent = { event: "message.discard", data: "{}" };

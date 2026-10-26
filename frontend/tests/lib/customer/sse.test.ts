@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { readSseEvents, type SseEvent } from "@/lib/sse";
+import { readSseEvents, type SseEvent } from "@/lib/customer/sse";
 
 /** 把若干段字节包装成一个“分块到达”的响应体。 */
 function streamOf(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {

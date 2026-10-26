@@ -1,9 +1,9 @@
 "use client";
 
-import { ConversationSidebar } from "@/components/ConversationSidebar";
-import { MessageComposer } from "@/components/MessageComposer";
-import { MessageList } from "@/components/MessageList";
-import { useChat } from "@/hooks/useChat";
+import { ConversationSidebar } from "@/components/customer/ConversationSidebar";
+import { MessageComposer } from "@/components/customer/MessageComposer";
+import { MessageList } from "@/components/customer/MessageList";
+import { useChat } from "@/hooks/customer/useChat";
 import type { User } from "@/lib/api";
 
 type Props = {
