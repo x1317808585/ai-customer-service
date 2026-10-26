@@ -85,7 +85,7 @@ async def test_pending_and_completed_returns_both_use_up_returnable_quantity(
 ) -> None:
     item_id = await delivered_item(add_order, users["alice"], earbuds, quantity=3)
     completed = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
-    await returns.complete_return(completed.id)
+    await returns.complete_return(users["admin"].id, completed.id)
     await returns.request_return(users["alice"].id, item_id, quantity=1, reason="不想要了")
 
     with pytest.raises(ReturnQuantityExceededError) as error:
@@ -100,7 +100,7 @@ async def test_rejected_and_cancelled_returns_free_up_quantity(
     item_id = await delivered_item(add_order, users["alice"], earbuds, quantity=1)
 
     rejected = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
-    await returns.reject_return(rejected.id)
+    await returns.reject_return(users["admin"].id, rejected.id, "商品已使用")
     cancelled = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
     await returns.cancel_return(users["alice"].id, cancelled.id)
     again = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
@@ -221,11 +221,11 @@ async def test_completing_a_return_restocks_exactly_once(
     item_id = await delivered_item(add_order, users["alice"], earbuds, quantity=2)
     request = await returns.request_return(users["alice"].id, item_id, quantity=2, reason="坏了")
 
-    completed = await returns.complete_return(request.id)
+    completed = await returns.complete_return(users["admin"].id, request.id, note=" 已验收入库 ")
     with pytest.raises(ReturnNotPendingError):
-        await returns.complete_return(request.id)
+        await returns.complete_return(users["admin"].id, request.id)
 
-    assert completed.status == "completed"
+    assert (completed.status, completed.resolved_by, completed.resolution_note) == ("completed", "admin", "已验收入库")
     assert completed.resolved_at is not None
     assert await stock_of(session_factory, earbuds) == 5 + 2
 
@@ -238,7 +238,7 @@ async def test_concurrent_completions_restock_only_once(
 
     async with session_factory() as blocker, blocker.begin():
         await blocker.execute(select(ReturnRequest).where(ReturnRequest.id == request.id).with_for_update())
-        attempts = [asyncio.create_task(returns.complete_return(request.id)) for _ in range(5)]
+        attempts = [asyncio.create_task(returns.complete_return(users["admin"].id, request.id)) for _ in range(5)]
         await asyncio.sleep(0.5)
     results = await asyncio.gather(*attempts, return_exceptions=True)
 
@@ -254,10 +254,53 @@ async def test_rejecting_a_return_does_not_restock(
     item_id = await delivered_item(add_order, users["alice"], earbuds)
     request = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
 
-    rejected = await returns.reject_return(request.id)
+    rejected = await returns.reject_return(users["admin"].id, request.id, " 商品已使用，不符合退货条件 ")
 
-    assert rejected.status == "rejected"
+    assert (rejected.status, rejected.resolved_by) == ("rejected", "admin")
+    assert rejected.resolution_note == "商品已使用，不符合退货条件"
     assert await stock_of(session_factory, earbuds) == 5
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "长" * 501], ids=["empty", "blank", "too-long"])
+async def test_rejecting_requires_a_short_reason(
+    returns: Returns, users: dict[str, User], add_order: AddOrder, earbuds: int, reason: str
+) -> None:
+    item_id = await delivered_item(add_order, users["alice"], earbuds)
+    request = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
+
+    with pytest.raises(InvalidReturnError):
+        await returns.reject_return(users["admin"].id, request.id, reason)
+
+    assert (await returns.get_for_staff(request.id)).status == "pending"
+
+
+async def test_customer_cancelling_is_recorded_as_resolved_by_the_customer(
+    returns: Returns, users: dict[str, User], add_order: AddOrder, earbuds: int
+) -> None:
+    item_id = await delivered_item(add_order, users["alice"], earbuds)
+    request = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
+
+    await returns.cancel_return(users["alice"].id, request.id)
+
+    staff_view = await returns.get_for_staff(request.id)
+    assert (staff_view.status, staff_view.resolved_by, staff_view.resolution_note) == ("cancelled", "alice", None)
+
+
+async def test_staff_see_returns_of_every_customer_by_status(
+    returns: Returns, users: dict[str, User], add_order: AddOrder, earbuds: int
+) -> None:
+    alice_item = await delivered_item(add_order, users["alice"], earbuds)
+    bob_item = await delivered_item(add_order, users["bob"], earbuds)
+    alice_request = await returns.request_return(users["alice"].id, alice_item, quantity=1, reason="坏了")
+    bob_request = await returns.request_return(users["bob"].id, bob_item, quantity=1, reason="不想要了")
+    await returns.complete_return(users["admin"].id, alice_request.id)
+
+    pending = await returns.list_for_staff("pending")
+    completed = await returns.list_for_staff("completed")
+
+    assert [(r.id, r.customer) for r in pending] == [(bob_request.id, "bob")]
+    assert [(r.id, r.customer, r.resolved_by) for r in completed] == [(alice_request.id, "alice", "admin")]
+    assert pending[0].delivered_at is not None
 
 
 async def test_only_the_owner_can_cancel_and_only_while_pending(
@@ -266,7 +309,7 @@ async def test_only_the_owner_can_cancel_and_only_while_pending(
     item_id = await delivered_item(add_order, users["alice"], earbuds, quantity=2)
     first = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
     second = await returns.request_return(users["alice"].id, item_id, quantity=1, reason="坏了")
-    await returns.complete_return(second.id)
+    await returns.complete_return(users["admin"].id, second.id)
 
     with pytest.raises(ReturnNotFoundError):
         await returns.cancel_return(users["bob"].id, first.id)
@@ -277,9 +320,11 @@ async def test_only_the_owner_can_cancel_and_only_while_pending(
     assert cancelled.status == "cancelled"
 
 
-async def test_unknown_return_is_not_found(returns: Returns) -> None:
+async def test_unknown_return_is_not_found(returns: Returns, users: dict[str, User]) -> None:
     with pytest.raises(ReturnNotFoundError):
-        await returns.complete_return(999)
+        await returns.complete_return(users["admin"].id, 999)
+    with pytest.raises(ReturnNotFoundError):
+        await returns.get_for_staff(999)
 
 
 # ---------- 查询 ----------

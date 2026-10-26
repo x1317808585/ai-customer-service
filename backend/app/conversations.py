@@ -93,22 +93,31 @@ class ConversationService:
     async def list_messages(self, user_id: int, conversation_id: int) -> list[HistoryMessage]:
         async with self._session_factory() as session:
             await _get_owned_conversation(session, user_id, conversation_id)
-            messages = await session.scalars(
-                select(Message)
-                .where(Message.conversation_id == conversation_id)
-                .options(selectinload(Message.action))
-                .order_by(Message.id)
+            return await self._history_of(session, conversation_id)
+
+    async def transcript_for_staff(self, conversation_id: int) -> list[HistoryMessage]:
+        """工作人员查看一个会话的全部消息。不检查会话归属，所以只给已鉴权的工单详情流程使用，
+        conversation_id 必须来自工单里保存的来源会话。会话已被删除时返回空列表。"""
+        async with self._session_factory() as session:
+            return await self._history_of(session, conversation_id)
+
+    async def _history_of(self, session: AsyncSession, conversation_id: int) -> list[HistoryMessage]:
+        messages = await session.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .options(selectinload(Message.action))
+            .order_by(Message.id)
+        )
+        return [
+            HistoryMessage(
+                id=message.id,
+                role=message.role,
+                content=message.content,
+                created_at=message.created_at,
+                action=self._actions.view(message.action) if message.action else None,
             )
-            return [
-                HistoryMessage(
-                    id=message.id,
-                    role=message.role,
-                    content=message.content,
-                    created_at=message.created_at,
-                    action=self._actions.view(message.action) if message.action else None,
-                )
-                for message in messages
-            ]
+            for message in messages
+        ]
 
     async def send_message(
         self, user_id: int, conversation_id: int, content: str

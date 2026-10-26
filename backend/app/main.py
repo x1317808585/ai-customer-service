@@ -15,6 +15,8 @@ from app.agent.llm import create_chat_model
 from app.agent.mcp_toolbox import McpToolbox
 from app.agent.reply_agent import ReplyAgent, Toolbox
 from app.api.actions import router as actions_router
+from app.api.admin import router as admin_router
+from app.api.admin.errors import StaleRecordError
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.trusted_origin import TrustedOriginMiddleware
@@ -44,10 +46,13 @@ def create_app(
         reply_agent = ReplyAgent(
             chat_model or create_chat_model(app_settings), toolbox or McpToolbox(app_settings)
         )
-        action_kinds = build_action_kinds(Returns(session_factory), Tickets(session_factory))
-        action_service = ActionService(session_factory, action_kinds)
+        returns = Returns(session_factory)
+        tickets = Tickets(session_factory)
+        action_service = ActionService(session_factory, build_action_kinds(returns, tickets))
 
         app.state.session_factory = session_factory
+        app.state.returns = returns
+        app.state.tickets = tickets
         app.state.action_service = action_service
         app.state.conversation_service = ConversationService(session_factory, reply_agent, action_service)
         yield
@@ -66,6 +71,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(conversations_router)
     app.include_router(actions_router)
+    app.include_router(admin_router)
 
     @app.exception_handler(ConversationNotFoundError)
     async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:
@@ -84,6 +90,11 @@ def create_app(
         assert isinstance(error, ActionNotConfirmableError)
         body = {"detail": str(error), "action": error.action.model_dump(mode="json")}
         return JSONResponse(body, status_code=status.HTTP_409_CONFLICT)
+
+    @app.exception_handler(StaleRecordError)
+    async def stale_record(_request: Request, error: Exception) -> JSONResponse:
+        assert isinstance(error, StaleRecordError)
+        return JSONResponse(error.body, status_code=status.HTTP_409_CONFLICT)
 
     @app.get("/health")
     async def health(session: SessionDep) -> dict[str, str]:

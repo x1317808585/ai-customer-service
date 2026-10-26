@@ -461,7 +461,7 @@ async def test_cancellation_after_staff_completed_the_return_fails_and_restocks_
 ) -> None:
     _status, stock_before = await return_status_and_stock(session_factory, pending_return)
     action_id = await propose_cancellation(returns, propose, users["alice"], pending_return)
-    await returns.complete_return(pending_return)  # 顾客还没点确认，客服先完成了退货
+    await returns.complete_return(users["admin"].id, pending_return)  # 顾客还没点确认，管理员先完成了退货
 
     result = await actions.confirm(users["alice"].id, action_id)
 

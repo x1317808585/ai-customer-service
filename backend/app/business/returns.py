@@ -5,14 +5,16 @@ from datetime import UTC, datetime, timedelta
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import aliased, joinedload
 
 from app.business.errors import BusinessError
-from app.models import Order, OrderItem, Product, ReturnRequest, ReturnStatus
+from app.models import Order, OrderItem, Product, ReturnRequest, ReturnStatus, User
 
 RETURN_WINDOW = timedelta(days=7)
 REASON_MAX_LENGTH = 500
+NOTE_MAX_LENGTH = 500
 LIST_LIMIT = 20
+STAFF_LIST_LIMIT = 50
 
 # 这些状态的退货会占用可退数量；已拒绝、已取消的不占用。
 _USES_UP_QUANTITY: tuple[ReturnStatus, ...] = ("pending", "completed")
@@ -94,6 +96,7 @@ class ReturnView(BaseModel):
     refund_cents: int
     reason: str
     status: ReturnStatus
+    resolution_note: str | None  # 完成时的备注、拒绝的原因。不包含处理人
     created_at: datetime
     resolved_at: datetime | None
 
@@ -108,9 +111,18 @@ class ReturnView(BaseModel):
             refund_cents=request.refund_cents,
             reason=request.reason,
             status=request.status,
+            resolution_note=request.resolution_note,
             created_at=request.created_at,
             resolved_at=request.resolved_at,
         )
+
+
+class StaffReturnView(ReturnView):
+    """管理员看到的退货申请：多了顾客、签收时间和处理人。"""
+
+    customer: str
+    delivered_at: datetime | None
+    resolved_by: str | None  # 处理人的用户名；历史记录可能为空
 
 
 class ReturnEligibility(BaseModel):
@@ -170,6 +182,16 @@ def _checked_reason(quantity: int, reason: str) -> str:
     if not reason or len(reason) > REASON_MAX_LENGTH:
         raise InvalidReturnError(f"请填写退货原因（不超过 {REASON_MAX_LENGTH} 个字）")
     return reason
+
+
+def _checked_note(note: str | None, *, required: bool) -> str | None:
+    """检查管理员填写的备注或原因，返回去掉首尾空格的内容（没填时返回 None）。"""
+    note = (note or "").strip() or None
+    if required and note is None:
+        raise InvalidReturnError(f"请填写拒绝原因（不超过 {NOTE_MAX_LENGTH} 个字）")
+    if note is not None and len(note) > NOTE_MAX_LENGTH:
+        raise InvalidReturnError(f"备注不能超过 {NOTE_MAX_LENGTH} 个字")
+    return note
 
 
 def _preview_of(facts: _ItemFacts, quantity: int, reason: str) -> ReturnPreview:
@@ -340,28 +362,58 @@ class Returns:
 
     async def cancel_return(self, user_id: int, return_id: int) -> ReturnView:
         """顾客撤回自己还在处理中的退货申请（自己开一个事务）。"""
-        return await self._finish(return_id, "cancelled", owner_id=user_id)
+        async with self._session_factory() as session, session.begin():
+            return await self.cancel_return_in(session, user_id, return_id)
 
     async def cancel_return_in(self, session: AsyncSession, user_id: int, return_id: int) -> ReturnView:
         """在调用方的事务里撤回退货申请：只写入，不提交。库存不变（只有完成退货才放回库存）。"""
-        return await self._finish_in(session, return_id, "cancelled", owner_id=user_id)
+        return await self._finish_in(session, return_id, "cancelled", actor_id=user_id, owner_id=user_id)
 
-    async def complete_return(self, return_id: int) -> ReturnView:
-        """客服确认收到退货：申请变为已完成，商品放回库存。"""
-        return await self._finish(return_id, "completed")
+    # ---------- 管理员 ----------
+    # admin_id 只用来记录操作人，鉴权由接口层负责（只有管理员能调到这些方法）。
 
-    async def reject_return(self, return_id: int) -> ReturnView:
-        """客服拒绝退货申请，库存不变。"""
-        return await self._finish(return_id, "rejected")
+    async def list_for_staff(self, status: ReturnStatus) -> list[StaffReturnView]:
+        """所有顾客的某种状态的退货申请，最新的在前。"""
+        async with self._session_factory() as session:
+            query = _staff_query().where(ReturnRequest.status == status)
+            rows = await session.execute(query.order_by(ReturnRequest.id.desc()).limit(STAFF_LIST_LIMIT))
+            return [_staff_view(*row) for row in rows]
 
-    async def _finish(self, return_id: int, status: ReturnStatus, owner_id: int | None = None) -> ReturnView:
+    async def get_for_staff(self, return_id: int) -> StaffReturnView:
+        async with self._session_factory() as session:
+            row = (await session.execute(_staff_query().where(ReturnRequest.id == return_id))).one_or_none()
+        if row is None:
+            raise ReturnNotFoundError(return_id)
+        return _staff_view(*row)
+
+    async def complete_return(self, admin_id: int, return_id: int, note: str | None = None) -> StaffReturnView:
+        """管理员确认收到退货：申请变为已完成，商品放回库存。备注可以不填。
+
+        这里只改系统状态和库存，项目没有对接支付，不代表退款已经到账。
+        """
+        note = _checked_note(note, required=False)
         async with self._session_factory() as session, session.begin():
-            return await self._finish_in(session, return_id, status, owner_id)
+            await self._finish_in(session, return_id, "completed", actor_id=admin_id, note=note)
+        return await self.get_for_staff(return_id)
+
+    async def reject_return(self, admin_id: int, return_id: int, reason: str) -> StaffReturnView:
+        """管理员拒绝退货申请，原因必须填写（顾客能看到），库存不变。"""
+        note = _checked_note(reason, required=True)
+        async with self._session_factory() as session, session.begin():
+            await self._finish_in(session, return_id, "rejected", actor_id=admin_id, note=note)
+        return await self.get_for_staff(return_id)
 
     async def _finish_in(
-        self, session: AsyncSession, return_id: int, status: ReturnStatus, owner_id: int | None = None
+        self,
+        session: AsyncSession,
+        return_id: int,
+        status: ReturnStatus,
+        *,
+        actor_id: int,
+        owner_id: int | None = None,
+        note: str | None = None,
     ) -> ReturnView:
-        # 锁住这条申请：两个人同时处理（比如顾客撤回、客服完成）时，后一个会看到它已经不是 pending。
+        # 锁住这条申请：两个人同时处理（比如顾客撤回、管理员完成）时，后一个会看到它已经不是 pending。
         request = await session.scalar(_return_query(return_id, owner_id).with_for_update(of=ReturnRequest))
         if request is None:
             raise ReturnNotFoundError(return_id)
@@ -369,6 +421,8 @@ class Returns:
             raise ReturnNotPendingError(request.status)
 
         request.status = status
+        request.resolved_by = actor_id
+        request.resolution_note = note
         request.resolved_at = self._clock()
         if status == "completed":
             await session.execute(
@@ -392,3 +446,27 @@ def _return_query(return_id: int, owner_id: int | None) -> Select[tuple[ReturnRe
     if owner_id is not None:
         query = query.where(Order.user_id == owner_id)
     return query
+
+
+_Customer = aliased(User, name="customer")
+_Resolver = aliased(User, name="resolver")
+
+
+def _staff_query() -> Select[tuple[ReturnRequest, str, datetime | None, str | None]]:
+    """管理员查询退货申请：连同顾客用户名、签收时间、处理人用户名一起查出。"""
+    return (
+        select(ReturnRequest, _Customer.username, Order.delivered_at, _Resolver.username)
+        .join(ReturnRequest.order_item)
+        .join(Order, Order.id == OrderItem.order_id)
+        .join(_Customer, _Customer.id == Order.user_id)
+        .outerjoin(_Resolver, _Resolver.id == ReturnRequest.resolved_by)
+        .options(joinedload(ReturnRequest.order_item))
+    )
+
+
+def _staff_view(
+    request: ReturnRequest, customer: str, delivered_at: datetime | None, resolved_by: str | None
+) -> StaffReturnView:
+    return StaffReturnView(
+        **ReturnView.of(request).model_dump(), customer=customer, delivered_at=delivered_at, resolved_by=resolved_by
+    )

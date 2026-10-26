@@ -98,8 +98,10 @@ async def test_finished_return_cannot_be_cancelled_and_says_why_in_chinese(
 ) -> None:
     if finish == "cancel_return":
         await returns.cancel_return(users["alice"].id, earbuds_return.id)
+    elif finish == "complete_return":
+        await returns.complete_return(users["admin"].id, earbuds_return.id)
     else:
-        await getattr(returns, finish)(earbuds_return.id)
+        await returns.reject_return(users["admin"].id, earbuds_return.id, "商品已使用")
 
     with pytest.raises(ReturnNotPendingError, match=message):
         await returns.preview_cancellation(users["alice"].id, earbuds_return.id)
@@ -145,7 +147,10 @@ async def test_cancel_and_staff_completion_at_the_same_time_only_one_wins(
     # 先锁住这条申请，让顾客撤回和客服完成堵在同一起跑线上再一起放行
     async with session_factory() as blocker, blocker.begin():
         await blocker.execute(select(ReturnRequest).where(ReturnRequest.id == earbuds_return.id).with_for_update())
-        attempts = [asyncio.create_task(cancel()), asyncio.create_task(returns.complete_return(earbuds_return.id))]
+        attempts = [
+            asyncio.create_task(cancel()),
+            asyncio.create_task(returns.complete_return(users["admin"].id, earbuds_return.id)),
+        ]
         await asyncio.sleep(0.5)
     results = await asyncio.gather(*attempts, return_exceptions=True)
 

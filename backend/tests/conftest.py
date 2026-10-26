@@ -40,7 +40,7 @@ def test_settings() -> Settings:
 
 @pytest.fixture
 async def users(test_settings: Settings) -> dict[str, User]:
-    """每个测试开始前清空测试库并重建表，再创建 alice 和 bob 两个用户（密码相同）。"""
+    """每个测试开始前清空测试库并重建表，再创建顾客 alice、bob 和管理员 admin（密码相同）。"""
     if not test_settings.postgres_db.endswith("_test"):
         raise RuntimeError(f"拒绝清空非测试库：{test_settings.postgres_db}")
 
@@ -51,10 +51,11 @@ async def users(test_settings: Settings) -> dict[str, User]:
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         alice = User(username="alice", role="customer", password_hash=TEST_PASSWORD_HASH)
         bob = User(username="bob", role="customer", password_hash=TEST_PASSWORD_HASH)
-        session.add_all([alice, bob])
+        admin = User(username="admin", role="admin", password_hash=TEST_PASSWORD_HASH)
+        session.add_all([alice, bob, admin])
         await session.commit()
     await engine.dispose()
-    return {"alice": alice, "bob": bob}
+    return {"alice": alice, "bob": bob, "admin": admin}
 
 
 @pytest.fixture

@@ -129,6 +129,11 @@ class ReturnRequest(Base):
         CheckConstraint(
             "(status = 'pending') = (resolved_at IS NULL)", name="ck_return_requests_resolved_at"
         ),
+        # 下面两条在迁移里以 NOT VALID 方式添加：历史记录没有处理人和原因，不回填，只约束新写入和被修改的行
+        CheckConstraint("status = 'pending' OR resolved_by IS NOT NULL", name="ck_return_requests_resolved_by"),
+        CheckConstraint(
+            "status <> 'rejected' OR resolution_note IS NOT NULL", name="ck_return_requests_rejection_note"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -137,6 +142,10 @@ class ReturnRequest(Base):
     refund_cents: Mapped[int]
     reason: Mapped[str] = mapped_column(String(500))
     status: Mapped[ReturnStatus] = mapped_column(String(16))
+    # 谁结束了这条申请：顾客撤回时是顾客本人，完成或拒绝时是管理员
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    # 完成时可选的备注，拒绝时必填的原因。顾客能看到
+    resolution_note: Mapped[str | None] = mapped_column(String(500))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[CreatedAt]
 
@@ -147,6 +156,13 @@ class Ticket(Base):
     __tablename__ = "tickets"
     __table_args__ = (
         CheckConstraint("status IN ('open', 'closed')", name="ck_tickets_status"),
+        # 待处理时三项处理信息都为空，关闭时三项都必须有
+        CheckConstraint(
+            "(status = 'open' AND resolution IS NULL AND resolved_by IS NULL AND resolved_at IS NULL)"
+            " OR (status = 'closed' AND resolution IS NOT NULL"
+            " AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)",
+            name="ck_tickets_resolution",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -158,6 +174,10 @@ class Ticket(Base):
     )
     summary: Mapped[str] = mapped_column(String(1000))
     status: Mapped[TicketStatus] = mapped_column(String(16))
+    # 关闭时由管理员填写的处理结果、处理人和处理时间。顾客能看到处理结果，看不到处理人
+    resolution: Mapped[str | None] = mapped_column(String(2000))
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[CreatedAt]
 
 

@@ -4,6 +4,8 @@ from fastapi import Cookie, Depends, HTTPException, Request, status
 
 from app.actions import ActionService
 from app.auth import InvalidTokenError, read_user_id
+from app.business.returns import Returns
+from app.business.tickets import Tickets
 from app.config import Settings
 from app.conversations import ConversationService
 from app.database import SessionFactoryDep
@@ -40,6 +42,14 @@ async def get_current_user(
     return user
 
 
+async def require_admin(user: Annotated[User, Depends(get_current_user)]) -> User:
+    """要求当前用户是管理员：没登录 401，不是管理员 403。
+
+    角色每次请求都从数据库读取，撤销管理员身份后，下一次请求就会被拒绝。
+    """
+    if user.role != "admin":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
+    return user
 
 
 def get_conversation_service(request: Request) -> ConversationService:
@@ -50,6 +60,17 @@ def get_action_service(request: Request) -> ActionService:
     return request.app.state.action_service
 
 
+def get_tickets(request: Request) -> Tickets:
+    return request.app.state.tickets
+
+
+def get_returns(request: Request) -> Returns:
+    return request.app.state.returns
+
+
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+AdminDep = Annotated[User, Depends(require_admin)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 ActionServiceDep = Annotated[ActionService, Depends(get_action_service)]
+TicketsDep = Annotated[Tickets, Depends(get_tickets)]
+ReturnsDep = Annotated[Returns, Depends(get_returns)]

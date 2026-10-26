@@ -185,3 +185,42 @@ async def test_offline_model_explains_the_preview(tool_name: str, text: str, sta
     reply = await offline_model(tool_name).ainvoke(history)
 
     assert reply.text == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "records", "expected"),
+    [
+        (
+            "list_my_tickets",
+            [{"id": 2, "status": "open", "resolution": None}, {"id": 1, "status": "closed", "resolution": "已联系物流补发"}],
+            "（离线模式）查到 2 条工单：2 待处理；1 已处理（处理结果：已联系物流补发）。",
+        ),
+        (
+            "list_my_returns",
+            [
+                {"id": 3, "status": "pending", "resolution_note": None},
+                {"id": 2, "status": "rejected", "resolution_note": "商品已使用"},
+            ],
+            "（离线模式）查到 2 条退货申请：3 处理中；2 已拒绝（说明：商品已使用）。",
+        ),
+        ("list_my_tickets", [], "（离线模式）查到 0 条工单。"),
+    ],
+    ids=["tickets", "returns", "no-tickets"],
+)
+async def test_offline_model_tells_status_and_result_of_tickets_and_returns(
+    tool_name: str, records: list[dict[str, object]], expected: str
+) -> None:
+    history = [
+        HumanMessage("我的工单和退货"),
+        AIMessage("", tool_calls=[{"name": tool_name, "args": {}, "id": "call-1"}]),
+        ToolMessage(
+            "（给模型看的文本）",
+            tool_call_id="call-1",
+            name=tool_name,
+            artifact={"structured_content": {"result": records}},
+        ),
+    ]
+
+    reply = await offline_model(tool_name).ainvoke(history)
+
+    assert reply.text == expected

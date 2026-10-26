@@ -36,7 +36,7 @@ def test_business_layer_does_not_depend_on_web_framework_api_or_mcp() -> None:
 def test_agent_reaches_business_data_only_through_mcp() -> None:
     modules = imported_modules("agent")
 
-    for forbidden in ("app.business", "app.mcp_server", "app.actions", "app.action_kinds"):
+    for forbidden in ("app.business", "app.mcp_server", "app.actions", "app.action_kinds", "app.api"):
         assert not imports_any(modules, forbidden), f"app/agent 不应该 import {forbidden}"
 
 
@@ -44,8 +44,19 @@ def test_mcp_server_cannot_reach_the_confirmation_entry() -> None:
     """助手发起的写操作只能经确认接口执行（app.actions 和它用到的 app.action_kinds），模型能用到的 MCP Server 不能碰。"""
     modules = imported_modules("mcp_server")
 
-    for forbidden in ("app.actions", "app.action_kinds"):
+    for forbidden in ("app.actions", "app.action_kinds", "app.api"):
         assert not imports_any(modules, forbidden), f"app/mcp_server 不应该 import {forbidden}"
+
+
+def test_staff_transcript_is_only_used_by_admin_api() -> None:
+    """transcript_for_staff 不检查会话归属，只能在已鉴权的管理接口里使用。"""
+    users = {
+        path.relative_to(APP_DIR).as_posix()
+        for path in APP_DIR.rglob("*.py")
+        if "transcript_for_staff" in path.read_text(encoding="utf-8")
+    }
+
+    assert users == {"conversations.py", "api/admin/tickets.py"}
 
 
 def test_every_business_exception_is_a_business_error() -> None:

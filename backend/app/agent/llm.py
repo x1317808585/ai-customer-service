@@ -23,6 +23,15 @@ MAX_RETRIES = 2
 # 离线模型的“规则”：消息里出现这些词，就调用对应的查询工具
 OFFLINE_KEYWORD_TOOLS = {"订单": "list_my_orders", "退货": "list_my_returns", "工单": "list_my_tickets"}
 OFFLINE_TOOL_LABELS = {"list_my_orders": "订单", "list_my_returns": "退货申请", "list_my_tickets": "工单"}
+# 列出工单、退货申请时，逐条说明处理状态：（状态 → 文字，说明字段，说明的叫法）
+OFFLINE_RECORD_STATUS = {
+    "list_my_tickets": ({"open": "待处理", "closed": "已处理"}, "resolution", "处理结果"),
+    "list_my_returns": (
+        {"pending": "处理中", "completed": "已完成", "rejected": "已拒绝", "cancelled": "已撤回"},
+        "resolution_note",
+        "说明",
+    ),
+}
 # 演示发起待确认操作的规则（按顺序匹配）：
 # - “转人工”：预览转人工工单，摘要是用户原话；消息里有“订单 N”时关联订单 N
 # - “撤回退货 N”：预览撤回退货申请 N
@@ -56,7 +65,7 @@ class OfflineChatModel(BaseChatModel):
     - 消息里有“转人工”时发起转人工预览；形如“撤回退货 3”时预览撤回退货申请 3；
       形如“退货 订单项 3”时预览退货订单项 3（不会替用户在多件商品里做选择）；
     - 消息里有“订单”“退货”“工单”且绑定了对应工具时，调用那个查询工具；
-    - 收到工具结果后，回复查到了几条记录；
+    - 收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果；
     - 其他情况把用户的话按固定格式逐字返回。
     """
 
@@ -157,9 +166,20 @@ def _summarize_tool_results(results: list[ToolMessage]) -> str:
             parts.append(f"查询{label}失败")
             continue
         records = _records_in(result)
+        if (statuses := OFFLINE_RECORD_STATUS.get(result.name or "")) and records:
+            parts.append(f"查到 {len(records)} 条{label}：" + "；".join(_with_status(r, *statuses) for r in records))
+            continue
         ids = "、".join(str(record["id"]) for record in records if "id" in record)
         parts.append(f"查到 {len(records)} 条{label}" + (f"（编号 {ids}）" if ids else ""))
     return "（离线模式）" + "；".join(parts) + "。"
+
+
+def _with_status(record: dict[str, Any], status_text: dict[str, str], detail_field: str, detail_name: str) -> str:
+    """一条记录的编号和处理状态，比如“1 已处理（处理结果：已联系物流补发）”。"""
+    status = record.get("status", "")
+    text = f"{record.get('id')} {status_text.get(status, status)}"
+    detail = record.get(detail_field)
+    return text + (f"（{detail_name}：{detail}）" if detail else "")
 
 
 def _records_in(result: ToolMessage) -> list[dict[str, Any]]:
