@@ -68,7 +68,7 @@ const ACTION_TEXTS: Record<ActionKind, ActionTexts> = {
     title: "退货申请",
     confirmLabel: "确认提交",
     dismissLabel: "取消",
-    pending: "请确认以下内容，确认后才会提交",
+    pending: "确认后才会提交",
     cancelled: "已取消，没有提交",
     expired: "已过期，没有提交。如仍需退货，请重新发起",
     failed: (error) => `提交失败：${error}。可以重新发起申请`,
@@ -102,17 +102,42 @@ export function formatCents(cents: number): string {
   return `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
 }
 
-/** 只有“待确认”的操作还能点确认或取消。是否过期以服务器返回的状态为准。 */
-export function canRespond(action: ActionView): boolean {
-  return action.status === "pending";
+/**
+ * 卡片上显示的状态：服务器的五种状态，加上两种只在本页面存在的临时状态。
+ * submitting：确认或取消的请求已发出、还没返回；unverified：请求和随后的查询都失败了，不知道结果。
+ */
+export type CardState = ActionStatus | "submitting" | "unverified";
+
+/** 本页面知道、服务器不知道的情况。 */
+export type LocalCardFacts = {
+  submitting: boolean;
+  unverified: boolean;
+  now: Date;
+};
+
+/**
+ * 卡片现在该显示什么状态。优先级从高到低：
+ * 服务器的终态 → 提交中 / 结果待核实 → 本地时钟判断的过期 → 服务器的待确认。
+ * 本地判断过期只是为了及时隐藏按钮；服务器以自己的时钟为准，点击时如果还没过期，照常处理。
+ */
+export function cardState(action: ActionView, local: LocalCardFacts): CardState {
+  if (action.status !== "pending") return action.status;
+  if (local.submitting) return "submitting";
+  if (local.unverified) return "unverified";
+  if (local.now.getTime() >= new Date(action.expires_at).getTime()) return "expired";
+  return "pending";
 }
 
-/** 卡片底部的结果说明。只有 status 是 executed 才说已经完成。 */
-export function describeActionOutcome(action: ActionView): string {
+/** 卡片底部的说明。只有 executed 才说已经完成。 */
+export function describeCard(action: ActionView, state: CardState): string {
   const texts = actionTexts(action);
-  switch (action.status) {
+  switch (state) {
     case "pending":
       return texts.pending;
+    case "submitting":
+      return "正在处理，请稍候";
+    case "unverified":
+      return "暂未确认操作结果，请重新查询";
     case "executed":
       return describeExecuted(action);
     case "cancelled":
@@ -122,6 +147,17 @@ export function describeActionOutcome(action: ActionView): string {
     case "failed":
       return texts.failed(action.error ?? "原因未知");
   }
+}
+
+/** "2026-10-26T02:26:00Z" → "13:26 前有效"（按浏览器所在的时区）。 */
+export function formatValidUntil(expiresAt: string, timeZone?: string): string {
+  const time = new Intl.DateTimeFormat("zh-CN", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(expiresAt));
+  return `${time} 前有效`;
 }
 
 function describeExecuted(action: ActionView): string {

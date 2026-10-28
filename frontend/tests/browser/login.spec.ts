@@ -16,7 +16,7 @@ test("顾客登录后进入聊天页，看不到管理工作台入口", async ({
   await logIn(page, CAROL.username);
 
   await expect(page).toHaveURL("/");
-  await expect(page.getByText("有什么可以帮你？")).toBeVisible();
+  await expect(page.getByText("你的问题，我们一起解决。")).toBeVisible();
   await expect(page.getByRole("link", { name: "管理工作台" })).toHaveCount(0);
 });
 

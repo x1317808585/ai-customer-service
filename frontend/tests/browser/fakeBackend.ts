@@ -3,12 +3,17 @@
  *
  * 默认行为按真实接口的约定实现（401 / 403 / 404 / 409 / 422）。测试可以用 hold、abort 改变某个请求的
  * 返回时机或结果，用来制造“响应很慢”“请求没收到响应”这类情况；权限、数据的变化直接改内存里的数据。
+ *
+ * 发送消息时，助手的回复按 replies 里排好的脚本生成。保存规则和真实后端一致：用户消息先保存；
+ * 确认卡片保存后才推送；回复只有发出 message.done 才保存。脚本没写 done 也没写 error，表示连接中途断开。
  */
 
 import type { Page, Request, Route } from "@playwright/test";
 
+import type { ActionView } from "@/lib/actions";
 import type { StaffReturn, StaffTicket } from "@/lib/admin/api";
 import type { ChatMessage, User } from "@/lib/api";
+import type { Conversation } from "@/lib/customer/api";
 
 /** 前端的后端地址在测试里指向本站的这个路径（见 playwright.config.ts）。 */
 export const FAKE_API_PATH = "/fake-api";
@@ -52,7 +57,34 @@ export function returnRequest(changes: Partial<StaffReturn> & { id: number }): S
   };
 }
 
-type Reply = { status: number; body?: unknown };
+/** 一张待确认的退货申请卡片。 */
+export function returnAction(changes: Partial<ActionView> & { id: number }): ActionView {
+  return {
+    kind: "return_request",
+    status: "pending",
+    error: null,
+    expires_at: "2099-01-01T00:00:00Z",
+    preview: {
+      order_id: 6,
+      order_item_id: 9,
+      product_name: "SoundPods 降噪耳机",
+      quantity: 1,
+      refund_cents: 59900,
+      reason: "不想要了",
+    },
+    result: null,
+    ...changes,
+  } as ActionView;
+}
+
+/** 助手回复脚本的一步。card 表示助手提议了一项待确认操作。 */
+export type ReplyStep =
+  | { type: "delta"; text: string }
+  | { type: "card"; action: ActionView }
+  | { type: "done" }
+  | { type: "error"; detail: string };
+
+type Reply = { status: number; body?: unknown; sse?: string };
 type Handler = (route: Route, request: Request) => Promise<void>;
 type Override = { method: string; path: RegExp; handle: Handler };
 
@@ -65,6 +97,13 @@ export class FakeBackend {
   tickets: StaffTicket[] = [];
   transcripts = new Map<number, ChatMessage[]>();
   returns: StaffReturn[] = [];
+  conversations: Conversation[] = [];
+  /** 每个会话的消息。确认卡片消息里的 action 和 actions 里的是同一个对象，确认后两边一起变。 */
+  messages = new Map<number, ChatMessage[]>();
+  actions = new Map<number, ActionView>();
+  /** 接下来几次发送消息时，助手依次按这些脚本回复。 */
+  replies: ReplyStep[][] = [];
+  private nextMessageId = 1000;
   /** 收到的请求，比如 "GET /api/admin/tickets?status=open" */
   readonly requests: string[] = [];
   private overrides: Override[] = [];
@@ -126,6 +165,20 @@ export class FakeBackend {
     return reply.body === undefined ? reply : { status: reply.status, body: structuredClone(reply.body) };
   }
 
+  /** 准备一个已有的会话和它的消息。卡片消息的 action 会同时登记到 actions 里。 */
+  addConversation(conversation: Conversation, messages: ChatMessage[] = []): void {
+    this.conversations.push(conversation);
+    this.messages.set(conversation.id, messages);
+    for (const message of messages) {
+      if (message.action) this.actions.set(message.action.id, message.action);
+    }
+  }
+
+  /** 收到的某种请求有几次，比如 count("POST", "/api/actions/7/confirm")。 */
+  count(method: string, path: string): number {
+    return this.requests.filter((item) => item === `${method} ${path}`).length;
+  }
+
   private compute(request: Request): Reply {
     const method = request.method();
     const path = apiPath(request);
@@ -144,13 +197,79 @@ export class FakeBackend {
     }
     if (!this.currentUser) return { status: 401, body: { detail: "未登录或登录已过期" } };
     if (method === "GET" && path === "/api/auth/me") return { status: 200, body: this.currentUser };
-    if (method === "GET" && path === "/api/conversations") return { status: 200, body: [] };
+
+    if (path.startsWith("/api/conversations") || path.startsWith("/api/actions/")) {
+      return this.answerCustomer(method, path, body);
+    }
 
     if (path.startsWith("/api/admin/")) {
       if (this.currentUser.role !== "admin") return { status: 403, body: { detail: "需要管理员权限" } };
       return this.answerAdmin(method, path, query, body);
     }
     return { status: 404, body: { detail: `模拟后端没有这个接口：${method} ${path}` } };
+  }
+
+  private answerCustomer(method: string, path: string, body: Record<string, unknown>): Reply {
+    if (method === "GET" && path === "/api/conversations") return { status: 200, body: newestFirst(this.conversations) };
+    if (method === "POST" && path === "/api/conversations") {
+      const conversation = { id: this.conversations.length + 1, title: "新会话", created_at: NOW };
+      this.addConversation(conversation);
+      return { status: 201, body: conversation };
+    }
+
+    const messagesMatch = path.match(/^\/api\/conversations\/(\d+)\/messages$/);
+    if (messagesMatch) {
+      const messages = this.messages.get(Number(messagesMatch[1]));
+      if (!messages) return { status: 404, body: { detail: "会话不存在" } };
+      if (method === "GET") return { status: 200, body: messages };
+      return { status: 200, sse: this.reply(Number(messagesMatch[1]), messages, String(body.content)) };
+    }
+
+    const actionMatch = path.match(/^\/api\/actions\/(\d+)(\/confirm|\/cancel)?$/);
+    if (actionMatch) {
+      const action = this.actions.get(Number(actionMatch[1]));
+      if (!action) return { status: 404, body: { detail: "操作不存在" } };
+      if (method === "GET" && !actionMatch[2]) return { status: 200, body: action };
+      if (action.status !== "pending") return { status: 409, body: { detail: "这项操作已经处理过了", action } };
+      if (actionMatch[2] === "/cancel") {
+        action.status = "cancelled";
+      } else {
+        Object.assign(action, { status: "executed", result: { return_id: 12, ticket_id: 3 } });
+      }
+      return { status: 200, body: action };
+    }
+    return { status: 404, body: { detail: `模拟后端没有这个接口：${method} ${path}` } };
+  }
+
+  /** 按下一个脚本生成回复，边“推送”边保存，返回整段 SSE 文本。 */
+  private reply(conversationId: number, messages: ChatMessage[], content: string): string {
+    const conversation = this.conversations.find((item) => item.id === conversationId);
+    if (conversation && messages.length === 0) conversation.title = content.slice(0, 20);
+    const save = (message: Omit<ChatMessage, "id" | "created_at">) => {
+      const saved = { ...message, id: this.nextMessageId++, created_at: NOW };
+      messages.push(saved);
+      return saved;
+    };
+
+    const user = save({ role: "user", content, action: null });
+    let sse = event("message.accepted", { message_id: user.id });
+    let text = "";
+    for (const step of this.replies.shift() ?? [{ type: "done" }]) {
+      if (step.type === "delta") {
+        text += step.text;
+        sse += event("message.delta", { text: step.text });
+      } else if (step.type === "card") {
+        this.actions.set(step.action.id, step.action);
+        const card = save({ role: "assistant", content: "", action: step.action });
+        sse += event("action.proposed", { message_id: card.id, action: step.action });
+      } else if (step.type === "done") {
+        const reply = save({ role: "assistant", content: text, action: null });
+        sse += event("message.done", { message_id: reply.id });
+      } else {
+        sse += event("error", { detail: step.detail });
+      }
+    }
+    return sse;
   }
 
   private answerAdmin(method: string, path: string, query: URLSearchParams, body: Record<string, unknown>): Reply {
@@ -224,7 +343,14 @@ function apiPath(request: Request): string {
   return pathname.slice(pathname.indexOf(FAKE_API_PATH) + FAKE_API_PATH.length);
 }
 
+function event(type: string, data: unknown): string {
+  return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
 function fulfill(route: Route, reply: Reply): Promise<void> {
+  if (reply.sse !== undefined) {
+    return route.fulfill({ status: reply.status, contentType: "text/event-stream", body: reply.sse });
+  }
   if (reply.body === undefined) return route.fulfill({ status: reply.status });
   return route.fulfill({ status: reply.status, contentType: "application/json", body: JSON.stringify(reply.body) });
 }

@@ -1,25 +1,31 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import type { FormEvent, KeyboardEvent, RefObject } from "react";
+import { ArrowUp, Square } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
 
 /** 与后端 MAX_MESSAGE_LENGTH 保持一致 */
 const MAX_MESSAGE_LENGTH = 4000;
 
 type Props = {
+  /** 输入框里的内容。由上层保存，快捷问题可以直接填进来。 */
+  draft: string;
+  onDraftChange: (text: string) => void;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   busy: boolean;
   replying: boolean;
   onSend: (text: string) => Promise<boolean>;
   onStop: () => void;
 };
 
-export function MessageComposer({ busy, replying, onSend, onStop }: Props) {
-  const [draft, setDraft] = useState("");
+export function MessageComposer({ draft, onDraftChange, inputRef, busy, replying, onSend, onStop }: Props) {
   const canSend = !busy && draft.trim() !== "";
 
   async function submit() {
     if (!canSend) return;
     const text = draft.trim();
-    setDraft("");
+    onDraftChange("");
     const accepted = await onSend(text);
-    if (!accepted) setDraft(text);
+    if (!accepted) onDraftChange(text);
   }
 
   function handleSubmit(event: FormEvent) {
@@ -36,33 +42,34 @@ export function MessageComposer({ busy, replying, onSend, onStop }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex items-end gap-2 border-t border-gray-200 p-4">
-      <textarea
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={handleKeyDown}
-        placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-        rows={2}
-        maxLength={MAX_MESSAGE_LENGTH}
-        className="flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-      />
-      {replying ? (
-        <button
-          type="button"
-          onClick={onStop}
-          className="rounded-lg bg-gray-700 px-4 py-2 text-sm text-white hover:bg-gray-800"
-        >
-          停止
-        </button>
-      ) : (
-        <button
-          type="submit"
-          disabled={!canSend}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          发送
-        </button>
-      )}
-    </form>
+    <div className="shrink-0 px-6 pb-6">
+      <form
+        onSubmit={handleSubmit}
+        className="mx-auto flex w-full max-w-[760px] items-end gap-2 rounded-xl border border-input bg-card p-2 shadow-sm transition-shadow duration-150 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25"
+      >
+        <textarea
+          ref={inputRef}
+          value={draft}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+          aria-label="输入消息"
+          rows={2}
+          maxLength={MAX_MESSAGE_LENGTH}
+          className="min-w-0 flex-1 resize-none bg-transparent px-2 py-1.5 text-base leading-[1.7] outline-none placeholder:text-muted-foreground"
+        />
+        {replying ? (
+          <Button type="button" variant="secondary" onClick={onStop} className="h-10 gap-1.5 px-4">
+            <Square aria-hidden className="fill-current" />
+            停止
+          </Button>
+        ) : (
+          <Button type="submit" disabled={!canSend} className="h-10 gap-1.5 px-4 hover:bg-primary-hover">
+            <ArrowUp aria-hidden />
+            发送
+          </Button>
+        )}
+      </form>
+    </div>
   );
 }
