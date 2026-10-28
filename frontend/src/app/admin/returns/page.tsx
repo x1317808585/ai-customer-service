@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "退货申请 · 管理工作台" };
 /** ReturnDesk 读取地址栏参数，按 Next.js 的要求包在 Suspense 里，否则生产构建会失败。 */
 export default function ReturnsPage() {
   return (
-    <Suspense fallback={<p role="status" className="p-6 text-sm text-gray-400">加载中…</p>}>
+    <Suspense fallback={<p role="status" className="p-6 text-sm text-muted-foreground">加载中…</p>}>
       <ReturnDesk />
     </Suspense>
   );

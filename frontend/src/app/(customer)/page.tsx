@@ -7,7 +7,7 @@ export default function ChatPage() {
   const { user, error, logOut } = useCurrentUser();
 
   if (error) {
-    return <p role="alert" className="p-6 text-sm text-red-700">{error}</p>;
+    return <p role="alert" className="p-6 text-sm text-status-danger">{error}</p>;
   }
   if (!user) {
     return null;

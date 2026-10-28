@@ -67,13 +67,13 @@ export function ReturnDesk() {
           onRefresh={desk.refresh}
           renderItem={(request) => (
             <>
-              <span className="flex justify-between text-gray-500">
+              <span className="flex justify-between text-muted-foreground">
                 <span>
                   #{request.id} · {request.customer}
                 </span>
                 <span>{formatDateTime(request.created_at)}</span>
               </span>
-              <span className="mt-1 block text-gray-900">
+              <span className="mt-1 block">
                 {request.product_name} × {request.quantity} · ¥{formatCents(request.refund_cents)}
               </span>
             </>

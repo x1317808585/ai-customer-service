@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { LogOut } from "lucide-react";
 
 import { AccessDenied } from "@/components/admin/AccessDenied";
+import { Button } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 const SECTIONS = [
@@ -21,22 +23,25 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   if (error) {
-    return <p role="alert" className="p-6 text-sm text-red-700">{error}</p>;
+    return <p role="alert" className="p-6 text-sm text-status-danger">{error}</p>;
   }
   if (!user) {
     return null;
   }
   if (user.role !== "admin") {
     return (
-      <main className="min-h-screen bg-gray-50 px-4">
+      <main className="min-h-screen px-4">
         <AccessDenied />
       </main>
     );
   }
   return (
-    <div className="flex h-screen flex-col bg-gray-50">
-      <header className="flex items-center gap-6 border-b border-gray-200 bg-white px-6 py-3 text-sm">
-        <span className="font-medium text-gray-900">管理工作台</span>
+    <div className="flex h-screen flex-col">
+      <header className="flex h-16 shrink-0 items-center gap-6 border-b bg-card px-6 text-sm">
+        <span className="flex items-baseline gap-2">
+          <span className="text-lg font-semibold tracking-tight">合意</span>
+          <span className="text-muted-foreground">管理工作台</span>
+        </span>
         <nav aria-label="管理工作台" className="flex gap-1">
           {SECTIONS.map((section) => {
             const current = pathname.startsWith(section.href);
@@ -45,7 +50,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
                 key={section.href}
                 href={section.href}
                 aria-current={current ? "page" : undefined}
-                className={`rounded-lg px-3 py-1.5 ${current ? "bg-blue-100 text-blue-900" : "text-gray-600 hover:bg-gray-100"}`}
+                className={`rounded-lg px-3 py-2 transition-colors duration-150 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none ${current ? "bg-accent font-medium text-accent-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground"}`}
               >
                 {section.label}
               </Link>
@@ -53,13 +58,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
           })}
         </nav>
         <div className="ml-auto flex items-center gap-4">
-          <Link href="/" className="text-gray-600 hover:text-gray-900">
+          <Link href="/" className="text-primary hover:underline">
             聊天页
           </Link>
-          <span className="text-gray-500">{user.username}</span>
-          <button type="button" onClick={logOut} className="text-gray-500 hover:text-gray-900">
+          <span className="text-muted-foreground">{user.username}</span>
+          <Button variant="ghost" onClick={logOut} className="h-8 gap-1 text-muted-foreground">
+            <LogOut aria-hidden />
             退出
-          </button>
+          </Button>
         </div>
       </header>
       <div className="min-h-0 flex-1">{children}</div>

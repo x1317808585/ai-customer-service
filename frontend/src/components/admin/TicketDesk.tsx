@@ -53,13 +53,13 @@ export function TicketDesk() {
           onRefresh={desk.refresh}
           renderItem={(ticket) => (
             <>
-              <span className="flex justify-between text-gray-500">
+              <span className="flex justify-between text-muted-foreground">
                 <span>
                   #{ticket.id} · {ticket.customer}
                 </span>
                 <span>{formatDateTime(ticket.created_at)}</span>
               </span>
-              <span className="mt-1 line-clamp-2 block text-gray-900">{ticket.summary}</span>
+              <span className="mt-1 line-clamp-2 block">{ticket.summary}</span>
             </>
           )}
         />

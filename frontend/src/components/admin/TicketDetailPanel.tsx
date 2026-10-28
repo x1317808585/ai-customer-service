@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 
 import { TranscriptView } from "@/components/admin/TranscriptView";
+import { Button } from "@/components/ui/button";
 import type { TicketDetail } from "@/lib/admin/api";
 import { formatDateTime, TICKET_STATUS_LABELS } from "@/lib/admin/display";
 
@@ -23,13 +24,13 @@ export function TicketDetailPanel({ detail, blocked, submitting, onClose }: Prop
   return (
     <article aria-labelledby="ticket-title" className="space-y-6">
       <header>
-        <h2 id="ticket-title" className="text-lg font-medium text-gray-900">
+        <h2 id="ticket-title" className="text-lg font-medium">
           工单 #{ticket.id}
         </h2>
-        <p className="mt-1 text-sm text-gray-500">状态：{TICKET_STATUS_LABELS[ticket.status]}</p>
+        <p className="mt-1 text-sm text-muted-foreground">状态：{TICKET_STATUS_LABELS[ticket.status]}</p>
       </header>
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-xl bg-white p-4 text-sm shadow-sm">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-xl border bg-card p-4 text-sm shadow-sm">
         <Field label="顾客">{ticket.customer}</Field>
         <Field label="关联订单">{ticket.order_id ?? "—"}</Field>
         <Field label="创建时间">{formatDateTime(ticket.created_at)}</Field>
@@ -46,11 +47,11 @@ export function TicketDetailPanel({ detail, blocked, submitting, onClose }: Prop
       {ticket.status === "open" && <CloseForm blocked={blocked} submitting={submitting} onClose={onClose} />}
 
       <section aria-labelledby="transcript-title">
-        <h3 id="transcript-title" className="mb-3 text-sm font-medium text-gray-700">
+        <h3 id="transcript-title" className="mb-3 text-sm font-medium">
           来源会话的聊天记录
         </h3>
         {ticket.conversation_id === null ? (
-          <p className="text-sm text-gray-400">这张工单没有来源会话。</p>
+          <p className="text-sm text-muted-foreground">这张工单没有来源会话。</p>
         ) : (
           <TranscriptView messages={transcript} />
         )}
@@ -70,8 +71,8 @@ function CloseForm({ blocked, submitting, onClose }: Omit<Props, "detail">) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
-      <label htmlFor="ticket-resolution" className="block text-sm font-medium text-gray-700">
+    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl border bg-card p-4 shadow-sm">
+      <label htmlFor="ticket-resolution" className="block text-sm font-medium">
         处理结果（顾客能看到）
       </label>
       <textarea
@@ -81,17 +82,13 @@ function CloseForm({ blocked, submitting, onClose }: Omit<Props, "detail">) {
         maxLength={RESOLUTION_MAX_LENGTH}
         rows={3}
         required
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        className="w-full rounded-lg border border-input bg-card px-3 py-2 text-sm outline-none transition-shadow duration-150 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
       />
       <div className="flex items-center justify-end gap-3">
-        {!trimmed && <span className="text-xs text-gray-400">填写处理结果后才能关闭</span>}
-        <button
-          type="submit"
-          disabled={!trimmed || blocked}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        {!trimmed && <span className="text-xs text-muted-foreground">填写处理结果后才能关闭</span>}
+        <Button type="submit" disabled={!trimmed || blocked} className="h-10 px-4 hover:bg-primary-hover">
           {submitting ? "提交中…" : "关闭工单"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -100,8 +97,8 @@ function CloseForm({ blocked, submitting, onClose }: Omit<Props, "detail">) {
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
-      <dt className="text-gray-400">{label}</dt>
-      <dd className="whitespace-pre-wrap break-words text-gray-900">{children}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="whitespace-pre-wrap [overflow-wrap:anywhere]">{children}</dd>
     </>
   );
 }

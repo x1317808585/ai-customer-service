@@ -1,5 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
 import type { StaffReturn } from "@/lib/admin/api";
 import { formatDateTime, RETURN_STATUS_LABELS } from "@/lib/admin/display";
 import { formatCents } from "@/lib/actions";
@@ -30,13 +31,13 @@ export function ReturnDetailPanel({ request, blocked, submitting, onComplete, on
   return (
     <article aria-labelledby="return-title" className="space-y-6">
       <header>
-        <h2 id="return-title" className="text-lg font-medium text-gray-900">
+        <h2 id="return-title" className="text-lg font-medium">
           退货申请 #{request.id}
         </h2>
-        <p className="mt-1 text-sm text-gray-500">状态：{RETURN_STATUS_LABELS[request.status]}</p>
+        <p className="mt-1 text-sm text-muted-foreground">状态：{RETURN_STATUS_LABELS[request.status]}</p>
       </header>
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-xl bg-white p-4 text-sm shadow-sm">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-xl border bg-card p-4 text-sm shadow-sm">
         <Field label="顾客">{request.customer}</Field>
         <Field label="订单">
           {request.order_id}（订单项 {request.order_item_id}）
@@ -77,8 +78,8 @@ function CompleteForm({ blocked, submitting, onComplete }: Pick<Props, "blocked"
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
-      <label htmlFor="return-note" className="block text-sm font-medium text-gray-700">
+    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl border bg-card p-4 shadow-sm">
+      <label htmlFor="return-note" className="block text-sm font-medium">
         备注（选填，顾客能看到）
       </label>
       <textarea
@@ -87,17 +88,13 @@ function CompleteForm({ blocked, submitting, onComplete }: Pick<Props, "blocked"
         onChange={(event) => setNote(event.target.value)}
         maxLength={NOTE_MAX_LENGTH}
         rows={3}
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        className="w-full rounded-lg border border-input bg-card px-3 py-2 text-sm outline-none transition-shadow duration-150 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
       />
-      <p className="text-xs text-gray-500">完成后退货商品会放回库存。系统没有对接支付，退款需要另行处理。</p>
+      <p className="text-xs text-muted-foreground">完成后退货商品会放回库存。系统没有对接支付，退款需要另行处理。</p>
       <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={blocked}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        <Button type="submit" disabled={blocked} className="h-10 px-4 hover:bg-primary-hover">
           {submitting ? "提交中…" : "完成退货"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -114,8 +111,8 @@ function RejectForm({ blocked, submitting, onReject }: Pick<Props, "blocked" | "
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl bg-white p-4 shadow-sm">
-      <label htmlFor="return-reject-reason" className="block text-sm font-medium text-gray-700">
+    <form onSubmit={handleSubmit} className="space-y-2 rounded-xl border bg-card p-4 shadow-sm">
+      <label htmlFor="return-reject-reason" className="block text-sm font-medium">
         拒绝原因（顾客能看到）
       </label>
       <textarea
@@ -125,17 +122,13 @@ function RejectForm({ blocked, submitting, onReject }: Pick<Props, "blocked" | "
         maxLength={NOTE_MAX_LENGTH}
         rows={3}
         required
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+        className="w-full rounded-lg border border-input bg-card px-3 py-2 text-sm outline-none transition-shadow duration-150 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25"
       />
       <div className="flex items-center justify-end gap-3">
-        {!trimmed && <span className="text-xs text-gray-400">填写拒绝原因后才能拒绝</span>}
-        <button
-          type="submit"
-          disabled={!trimmed || blocked}
-          className="rounded-lg border border-red-300 px-4 py-2 text-sm text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
+        {!trimmed && <span className="text-xs text-muted-foreground">填写拒绝原因后才能拒绝</span>}
+        <Button type="submit" variant="destructive" disabled={!trimmed || blocked} className="h-10 px-4">
           {submitting ? "提交中…" : "拒绝退货"}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -144,8 +137,8 @@ function RejectForm({ blocked, submitting, onReject }: Pick<Props, "blocked" | "
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>
-      <dt className="text-gray-400">{label}</dt>
-      <dd className="whitespace-pre-wrap break-words text-gray-900">{children}</dd>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="whitespace-pre-wrap [overflow-wrap:anywhere]">{children}</dd>
     </>
   );
 }

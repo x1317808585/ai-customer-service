@@ -31,7 +31,7 @@ export function RecordList<Status extends string, Item extends { id: number }>({
 }: Props<Status, Item>) {
   return (
     <>
-      <div className="flex items-center justify-between gap-2 border-b border-gray-200 px-4 py-3">
+      <div className="flex items-center justify-between gap-2 border-b px-4 py-3">
         <nav aria-label={`${title}筛选`} className="flex flex-wrap gap-1 text-sm">
           {statuses.map((status) => (
             <Link
@@ -39,15 +39,21 @@ export function RecordList<Status extends string, Item extends { id: number }>({
               href={hrefFor(status)}
               scroll={false}
               aria-current={status === currentStatus ? "page" : undefined}
-              className={`rounded-lg px-2.5 py-1 ${
-                status === currentStatus ? "bg-blue-100 text-blue-900" : "text-gray-600 hover:bg-gray-100"
+              className={`rounded-lg px-2.5 py-1 transition-colors duration-150 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none ${
+                status === currentStatus
+                  ? "bg-accent font-medium text-accent-foreground"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground"
               }`}
             >
               {statusLabels[status]}
             </Link>
           ))}
         </nav>
-        <button type="button" onClick={onRefresh} className="shrink-0 text-sm text-gray-500 hover:text-gray-900">
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="shrink-0 rounded-md px-2 py-1 text-sm text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+        >
           刷新
         </button>
       </div>
@@ -84,15 +90,15 @@ function ListBody<Status extends string, Item extends { id: number }>({
   renderItem: (item: Item) => ReactNode;
 }) {
   if (list.kind === "loading") {
-    return <p role="status" className="p-4 text-sm text-gray-400">加载中…</p>;
+    return <p role="status" className="p-4 text-sm text-muted-foreground">加载中…</p>;
   }
   if (list.kind === "error") {
-    return <p role="alert" className="p-4 text-sm text-red-700">{list.message}</p>;
+    return <p role="alert" className="p-4 text-sm text-status-danger">{list.message}</p>;
   }
   return (
     <>
       {list.items.length === 0 ? (
-        <p className="p-4 text-sm text-gray-400">暂无{statusLabel}的{title}</p>
+        <p className="p-4 text-sm text-muted-foreground">暂无{statusLabel}的{title}</p>
       ) : (
         <ul aria-label={`${statusLabel}的${title}`}>
           {list.items.map((item) => (
@@ -101,8 +107,8 @@ function ListBody<Status extends string, Item extends { id: number }>({
                 href={hrefFor(currentStatus, item.id)}
                 scroll={false}
                 aria-current={item.id === selectedId ? "true" : undefined}
-                className={`block border-b border-gray-100 px-4 py-3 text-sm ${
-                  item.id === selectedId ? "bg-blue-50" : "hover:bg-gray-50"
+                className={`block border-b px-4 py-3 text-sm transition-colors duration-150 focus-visible:bg-secondary focus-visible:outline-none ${
+                  item.id === selectedId ? "bg-accent" : "hover:bg-secondary/60"
                 }`}
               >
                 {renderItem(item)}
@@ -111,9 +117,9 @@ function ListBody<Status extends string, Item extends { id: number }>({
           ))}
         </ul>
       )}
-      <p className="px-4 py-3 text-xs text-gray-400">按编号从新到旧，最多显示 {STAFF_LIST_LIMIT} 条</p>
+      <p className="px-4 py-3 text-xs text-muted-foreground">按编号从新到旧，最多显示 {STAFF_LIST_LIMIT} 条</p>
       {reachedListLimit(list.items.length) && (
-        <p className="px-4 pb-3 text-xs text-amber-700">
+        <p className="px-4 pb-3 text-xs text-status-pending">
           已达到显示上限，可能还有更早的记录，当前没有提供分页。
         </p>
       )}
