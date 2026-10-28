@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { ArrowDown } from "lucide-react";
 
 import { ActionCard } from "@/components/ActionCard";
+import { Button } from "@/components/ui/button";
 import type { DisplayMessage } from "@/hooks/customer/useChat";
+import { useStickToBottom } from "@/hooks/customer/useStickToBottom";
 import { describeToolProgress } from "@/lib/customer/replyDraft";
 
 /** 空会话里的快捷问题。点了只填进输入框，由用户补充后自己发送。 */
@@ -10,17 +12,25 @@ const QUICK_QUESTIONS = ["查一下我最近的订单", "我想申请退货", "�
 type Props = {
   messages: DisplayMessage[];
   busyActionIds: ReadonlySet<number>;
+  unverifiedActionIds: ReadonlySet<number>;
+  checkingActionIds: ReadonlySet<number>;
   onConfirmAction: (actionId: number) => void;
   onCancelAction: (actionId: number) => void;
+  onRecheckAction: (actionId: number) => void;
   onPickQuestion: (text: string) => void;
 };
 
-export function MessageList({ messages, busyActionIds, onConfirmAction, onCancelAction, onPickQuestion }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+export function MessageList({
+  messages,
+  busyActionIds,
+  unverifiedActionIds,
+  checkingActionIds,
+  onConfirmAction,
+  onCancelAction,
+  onRecheckAction,
+  onPickQuestion,
+}: Props) {
+  const { scrollRef, onScroll, hasNewMessages, scrollToBottom } = useStickToBottom(messages);
 
   if (messages.length === 0) {
     return (
@@ -43,27 +53,41 @@ export function MessageList({ messages, busyActionIds, onConfirmAction, onCancel
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <ol aria-label="消息记录" className="mx-auto w-full max-w-[760px] space-y-5 px-6 py-6">
-        {messages.map((message, index) => (
-          <li key={message.key} className={message.role === "user" ? "flex flex-col items-end" : "flex gap-3"}>
-            {message.role === "assistant" && <AssistantAvatar visible={messages[index - 1]?.role !== "assistant"} />}
-            {message.action ? (
-              <ActionCard
-                mode="interactive"
-                action={message.action}
-                busy={busyActionIds.has(message.action.id)}
-                onConfirm={onConfirmAction}
-                onCancel={onCancelAction}
-              />
-            ) : (
-              <MessageBubble message={message} />
-            )}
-            {isUnanswered(messages, index) && <span className="mt-1 text-xs text-muted-foreground">未收到回复</span>}
-          </li>
-        ))}
-      </ol>
-      <div ref={bottomRef} />
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
+        <ol aria-label="消息记录" className="mx-auto w-full max-w-[760px] space-y-5 px-6 py-6">
+          {messages.map((message, index) => (
+            <li key={message.key} className={message.role === "user" ? "flex flex-col items-end" : "flex gap-3"}>
+              {message.role === "assistant" && <AssistantAvatar visible={messages[index - 1]?.role !== "assistant"} />}
+              {message.action ? (
+                <ActionCard
+                  mode="interactive"
+                  action={message.action}
+                  busy={busyActionIds.has(message.action.id)}
+                  unverified={unverifiedActionIds.has(message.action.id)}
+                  checking={checkingActionIds.has(message.action.id)}
+                  onConfirm={onConfirmAction}
+                  onCancel={onCancelAction}
+                  onRecheck={onRecheckAction}
+                />
+              ) : (
+                <MessageBubble message={message} />
+              )}
+              {isUnanswered(messages, index) && <span className="mt-1 text-xs text-muted-foreground">未收到回复</span>}
+            </li>
+          ))}
+        </ol>
+      </div>
+      {hasNewMessages && (
+        <Button
+          variant="outline"
+          onClick={scrollToBottom}
+          className="absolute bottom-3 left-1/2 h-9 -translate-x-1/2 gap-1.5 rounded-full px-4 shadow-sm"
+        >
+          <ArrowDown aria-hidden />
+          有新消息
+        </Button>
+      )}
     </div>
   );
 }
@@ -98,6 +122,7 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
       )}
       {message.content}
       {message.streaming && <span className="ml-0.5 animate-pulse motion-reduce:animate-none">▍</span>}
+      {message.unfinished && <p className="mt-1 text-xs text-muted-foreground">回复未完成，未保存</p>}
     </div>
   );
 }

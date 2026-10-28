@@ -8,6 +8,7 @@ import {
   Headset,
   LoaderCircle,
   Package,
+  RefreshCw,
   TimerOff,
   type LucideIcon,
 } from "lucide-react";
@@ -35,9 +36,15 @@ type Props =
   | {
       mode: "interactive";
       action: ActionView;
+      /** 确认或取消的请求已发出、还没返回 */
       busy: boolean;
+      /** 请求和随后的查询都失败了，不知道结果 */
+      unverified: boolean;
+      /** 正在重新查询结果 */
+      checking: boolean;
       onConfirm: (actionId: number) => void;
       onCancel: (actionId: number) => void;
+      onRecheck: (actionId: number) => void;
     };
 
 /** 每种状态的名称、图标和配色：文字、图标加少量颜色，不只靠颜色区分。 */
@@ -57,7 +64,8 @@ export function ActionCard(props: Props) {
   const texts = actionTexts(action);
   const now = useNowUntil(action.status === "pending" ? action.expires_at : null);
   const busy = props.mode === "interactive" && props.busy;
-  const state = cardState(action, { submitting: busy, unverified: false, now });
+  const unverified = props.mode === "interactive" && props.unverified;
+  const state = cardState(action, { submitting: busy, unverified, now });
   const style = STATE_STYLES[state];
   const KindIcon = action.kind === "ticket" ? Headset : Package;
   const showButtons = props.mode === "interactive" && (state === "pending" || state === "submitting");
@@ -86,6 +94,20 @@ export function ActionCard(props: Props) {
       <p className={`mt-3 text-[13px] ${state === "failed" ? "text-status-danger" : "text-muted-foreground"}`}>
         {describeCard(action, state)}
       </p>
+
+      {props.mode === "interactive" && state === "unverified" && (
+        <div className="mt-4 flex justify-end border-t pt-3">
+          <Button
+            variant="outline"
+            disabled={props.checking}
+            onClick={() => props.onRecheck(action.id)}
+            className="h-10 gap-1.5 px-4"
+          >
+            <RefreshCw aria-hidden className={props.checking ? "animate-spin" : ""} />
+            重新查询
+          </Button>
+        </div>
+      )}
 
       {showButtons && (
         <div className="mt-4 flex items-center justify-between gap-3 border-t pt-3">
