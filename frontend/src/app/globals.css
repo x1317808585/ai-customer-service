@@ -1,5 +1,116 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-body {
-  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+/* 只有带 .dark 的元素内部才启用 dark: 样式。本阶段没有深色主题，不加 .dark，组件里的 dark: 样式就不会生效 */
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-status-pending: var(--status-pending);
+  --color-status-pending-bg: var(--status-pending-bg);
+  --color-status-success: var(--status-success);
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-danger: var(--status-danger);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-neutral: var(--status-neutral);
+  --color-status-neutral-bg: var(--status-neutral-bg);
+
+  --color-bubble-user: var(--bubble-user);
+  --color-bubble-assistant: var(--bubble-assistant);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: 1rem;
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* 澄明配色 */
+:root {
+  --background: #f7f9fd;
+  --foreground: #182230;
+  --card: #ffffff;
+  --card-foreground: #182230;
+  --popover: #ffffff;
+  --popover-foreground: #182230;
+  --primary: #365de8;
+  --primary-hover: #2a4cc9;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f8;
+  --secondary-foreground: #182230;
+  --muted: #eef2f8;
+  --muted-foreground: #596579;
+  --accent: #eaf0ff;
+  --accent-foreground: #182230;
+  --destructive: #b42318;
+  --border: #e4e9f2;
+  --input: #cbd3e1;
+  --ring: #365de8;
+  --radius: 0.625rem;
+
+  --sidebar: #f4f7fc;
+  --sidebar-foreground: #182230;
+  --sidebar-primary: #365de8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eaf0ff;
+  --sidebar-accent-foreground: #182230;
+  --sidebar-border: #e4e9f2;
+  --sidebar-ring: #365de8;
+
+  --status-pending: #a15c00;
+  --status-pending-bg: #fff4e0;
+  --status-success: #177245;
+  --status-success-bg: #e7f6ee;
+  --status-danger: #b42318;
+  --status-danger-bg: #fdecea;
+  --status-neutral: #596579;
+  --status-neutral-bg: #eef2f8;
+
+  --bubble-user: #e6edfd;
+  --bubble-assistant: #eef2f8;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
 }
