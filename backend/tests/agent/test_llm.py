@@ -2,7 +2,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
-from app.agent.llm import OfflineChatModel, create_chat_model
+from app.agent.llm import OFFLINE_NO_EVIDENCE_REPLY, OfflineChatModel, create_chat_model
 from app.config import Settings
 from tests.constants import TEST_JWT_SECRET, TEST_MCP_TOKEN_SECRET
 
@@ -228,3 +228,73 @@ async def test_offline_model_tells_status_and_result_of_tickets_and_returns(
     reply = await offline_model(tool_name).ainvoke(history)
 
     assert reply.text == expected
+
+
+# ---------- 离线模型查知识库 ----------
+
+ALL_TOOLS = (
+    "search_knowledge",
+    "list_my_orders",
+    "list_my_returns",
+    "list_my_tickets",
+    "search_products",
+    "preview_order",
+    "preview_ticket",
+    "preview_return_cancellation",
+    "preview_return_request",
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "tool_name"),
+    [
+        ("帮我退货，订单项 3", "preview_return_request"),
+        ("退货政策是什么？", "search_knowledge"),
+        ("我的退货申请处理到哪了？", "list_my_returns"),
+        ("K8 是什么轴？", "search_knowledge"),
+    ],
+    ids=["proposal-first", "knowledge-words-before-records", "records", "everything-else"],
+)
+async def test_offline_model_routes_knowledge_questions(question: str, tool_name: str) -> None:
+    reply = await offline_model(*ALL_TOOLS).ainvoke([HumanMessage(question)])
+
+    assert [call["name"] for call in reply.tool_calls] == [tool_name]
+
+
+def knowledge_result(evidence: dict[str, object]) -> list[object]:
+    return [
+        HumanMessage("退货政策是什么？"),
+        AIMessage("", tool_calls=[{"name": "search_knowledge", "args": {}, "id": "call-1"}]),
+        ToolMessage(
+            "（给模型看的文本）",
+            tool_call_id="call-1",
+            name="search_knowledge",
+            artifact={"structured_content": evidence},
+        ),
+    ]
+
+
+async def test_offline_model_quotes_the_first_passage_with_its_source() -> None:
+    passage = {
+        "source_id": "return-policy#退货期限",
+        "document_title": "退货政策",
+        "section": "退货期限",
+        "content": "签收后 7 天内可以申请退货。",
+    }
+    other = {**passage, "source_id": "return-policy#退款金额", "section": "退款金额", "content": "按成交单价退款。"}
+
+    reply = await offline_model("search_knowledge").ainvoke(
+        knowledge_result({"status": "supported", "passages": [passage, other]})
+    )
+
+    assert reply.text == (
+        "（离线模式）根据《退货政策》“退货期限”：「签收后 7 天内可以申请退货。」[来源：return-policy#退货期限]。"
+    )
+
+
+async def test_offline_model_says_so_when_there_is_no_evidence() -> None:
+    reply = await offline_model("search_knowledge").ainvoke(
+        knowledge_result({"status": "insufficient", "passages": []})
+    )
+
+    assert reply.text == f"（离线模式）{OFFLINE_NO_EVIDENCE_REPLY}。"

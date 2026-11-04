@@ -31,6 +31,7 @@ READ_TOOLS = {
     "preview_return_request",
     "preview_return_cancellation",
     "preview_ticket",
+    "search_knowledge",
 }
 
 
@@ -176,6 +177,7 @@ async def test_read_tools_do_not_change_any_data(
             "preview_return_request": {"order_item_id": item_id, "quantity": 1, "reason": "坏了"},
             "preview_return_cancellation": {"return_id": return_id},
             "preview_ticket": {"summary": "顾客要求人工处理", "order_id": order_id},
+            "search_knowledge": {"question": "退货政策是什么？"},
         }
         for name, arguments in calls.items():
             data_of(await session.call_tool(name, arguments))

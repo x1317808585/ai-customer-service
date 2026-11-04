@@ -36,4 +36,11 @@ class ActionProposed:
     preview: dict[str, Any]
 
 
-AgentEvent = TextDelta | DraftDiscarded | ToolStatus | ActionProposed
+@dataclass(frozen=True)
+class KnowledgeFound:
+    """知识库检索找到了充分的依据。passages 是这些原文段落（含出处），本轮回复可以引用它们。"""
+
+    passages: tuple[dict[str, Any], ...]
+
+
+AgentEvent = TextDelta | DraftDiscarded | ToolStatus | ActionProposed | KnowledgeFound

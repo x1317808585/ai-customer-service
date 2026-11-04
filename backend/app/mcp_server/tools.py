@@ -1,17 +1,18 @@
 import functools
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.business.catalog import Catalog, ProductView
 from app.business.errors import BusinessError
+from app.business.knowledge import KnowledgeBase, Passage, Supported
 from app.business.orders import MAX_LINE_QUANTITY, MAX_ORDER_LINES, OrderLine, OrderPreview, Orders, OrderView
 from app.business.returns import (
     ReturnCancellationPreview,
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True)
 SYSTEM_ERROR_MESSAGE = "系统暂时出错，请稍后再试"
+
+
+class KnowledgeEvidence(BaseModel):
+    """知识库检索的结果。supported：passages 是 1～3 段能回答问题的原文；insufficient：没有找到依据。"""
+
+    status: Literal["supported", "insufficient"]
+    passages: list[Passage]
 
 
 def current_user_id() -> int:
@@ -58,6 +66,7 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
     orders = Orders(session_factory)
     returns = Returns(session_factory)
     tickets = Tickets(session_factory)
+    knowledge = KnowledgeBase(session_factory)
 
     @mcp.tool(annotations=READ_ONLY)
     @hide_system_errors
@@ -159,3 +168,17 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
         只生成预览，不会创建。顾客在页面上确认后，系统才会创建工单，交给人工客服处理。
         """
         return await tickets.preview_ticket(current_user_id(), summary, order_id)
+
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def search_knowledge(
+        question: Annotated[str, Field(description="顾客的问题，用原话即可")],
+    ) -> KnowledgeEvidence:
+        """查询退货政策、配送说明、常见问题和商品说明书。
+
+        status 为 supported 时，只能根据返回的原文回答；为 insufficient 时，知识库里没有依据，不要猜测。
+        """
+        result = await knowledge.search(question)
+        if isinstance(result, Supported):
+            return KnowledgeEvidence(status="supported", passages=list(result.passages))
+        return KnowledgeEvidence(status="insufficient", passages=[])

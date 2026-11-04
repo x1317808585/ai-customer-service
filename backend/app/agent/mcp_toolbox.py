@@ -24,6 +24,7 @@ ALLOWED_TOOLS = frozenset(
         "preview_return_request",
         "preview_return_cancellation",
         "preview_ticket",
+        "search_knowledge",
     }
 )
 MCP_HTTP_TIMEOUT_SECONDS = 15

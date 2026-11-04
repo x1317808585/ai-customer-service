@@ -10,7 +10,7 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.agent.events import ActionProposed, TextDelta, ToolStatus
+from app.agent.events import ActionProposed, KnowledgeFound, TextDelta, ToolStatus
 
 SYSTEM_PROMPT = (
     "你是电商平台的 AI 客服，用简洁、礼貌的中文回答顾客的问题。\n"
@@ -24,7 +24,9 @@ SYSTEM_PROMPT = (
     "- 撤回退货申请：先用 list_my_returns 找到退货申请编号，再用 preview_return_cancellation。只有处理中的申请能撤回。\n"
     "- 转人工：顾客明确要求人工，或者遇到换货、质量争议、物流异常等工具处理不了的问题时，"
     "用 preview_ticket 整理问题摘要（第三人称，写清问题和诉求，有订单就带上订单号）。"
-    "创建工单只是交给人工客服处理，不要说人工客服已经接入。"
+    "创建工单只是交给人工客服处理，不要说人工客服已经接入。\n"
+    "退货政策、配送、常见问题，以及商品说明书里的内容（比如保修、续航、功率），先用 search_knowledge 查询，"
+    "只能根据返回的原文回答，并说明出处。返回 insufficient 时直接告诉顾客没有找到相关说明，不要猜测，可以建议转人工。"
 )
 
 # 预览工具 → 它发起的待确认操作类型。预览成功后，页面上会出现确认卡片
@@ -34,6 +36,7 @@ PROPOSAL_TOOLS = {
     "preview_return_cancellation": "return_cancellation",
     "preview_ticket": "ticket",
 }
+KNOWLEDGE_TOOL = "search_knowledge"
 PROPOSAL_NOTE = "已生成待确认的申请，页面上会显示确认卡片。顾客点击确认后才会执行，现在还没有执行。"
 TOOL_LIMIT_REPLY = "抱歉，这个问题需要查询的内容太多，我暂时处理不了。可以换个问法，或者告诉我需要转人工。"
 
@@ -111,6 +114,10 @@ def build_chat_graph(
                 write(ActionProposed(PROPOSAL_TOOLS[tool.name], dict(call["args"]), _structured(message)))
                 message = _with_note(message, PROPOSAL_NOTE)
                 proposal_made = True
+            if tool.name == KNOWLEDGE_TOOL and not failed:
+                evidence = _structured(message)
+                if evidence.get("status") == "supported":
+                    write(KnowledgeFound(tuple(evidence["passages"])))
             results.append(message)
         return {
             "messages": results,
@@ -138,7 +145,7 @@ def _structured(message: object) -> dict[str, Any]:
     artifact = getattr(message, "artifact", None)
     data = artifact.get("structured_content") if isinstance(artifact, dict) else None
     if not isinstance(data, dict):
-        raise ToolsUnavailableError("预览工具没有返回结构化结果")
+        raise ToolsUnavailableError("工具没有返回结构化结果")
     return data
 
 

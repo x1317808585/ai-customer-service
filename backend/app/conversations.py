@@ -11,8 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.actions import ActionService, ActionView
-from app.agent.events import ActionProposed, DraftDiscarded, TextDelta, ToolStatus
+from app.agent.events import ActionProposed, DraftDiscarded, KnowledgeFound, TextDelta, ToolStatus
 from app.agent.reply_agent import ReplyAgent, ReplyFailedError
+from app.citations import Citation, cited
 from app.models import Conversation, Message, MessageRole
 
 logger = logging.getLogger(__name__)
@@ -42,13 +43,14 @@ class ReplyEvent:
 
 @dataclass(frozen=True)
 class HistoryMessage:
-    """历史记录里的一条消息。确认卡片消息带着对应操作的当前状态。"""
+    """历史记录里的一条消息。确认卡片消息带着对应操作的当前状态，助手回复带着它引用的原文快照。"""
 
     id: int
     role: MessageRole
     content: str
     created_at: datetime
     action: ActionView | None
+    citations: list[Citation]
 
 
 class ConversationNotFoundError(Exception):
@@ -115,6 +117,7 @@ class ConversationService:
                 content=message.content,
                 created_at=message.created_at,
                 action=self._actions.view(message.action) if message.action else None,
+                citations=[Citation.model_validate(citation) for citation in message.citations or []],
             )
             for message in messages
         ]
@@ -152,6 +155,7 @@ class ConversationService:
                 # 只保存最终回答：被撤回的草稿（模型调用工具前说的话）不算。
                 # aclosing：这里提前结束（比如用户点了停止）时，主动关闭 Agent，让它马上断开 MCP 连接。
                 reply_text = ""
+                candidates: list[Citation] = []  # 本轮检索给出的知识库原文，最终回复只能引用它们
                 async with aclosing(self._reply_agent.stream_reply(user_id, history)) as agent_events:
                     async for event in agent_events:
                         match event:
@@ -161,6 +165,8 @@ class ConversationService:
                             case DraftDiscarded():
                                 reply_text = ""
                                 yield ReplyEvent("message.discard", {})
+                            case KnowledgeFound(passages=passages):
+                                candidates.extend(Citation.model_validate(passage) for passage in passages)
                             case ToolStatus(call_id=call_id, tool=tool, status=tool_status):
                                 yield ReplyEvent(
                                     "tool.status", {"call_id": call_id, "tool": tool, "status": tool_status}
@@ -186,8 +192,15 @@ class ConversationService:
                                     },
                                 )
 
+                # 引用和正文作为同一条消息一起保存；拒答、中断时不会走到这里，候选原文不会挂到页面上
+                citations = cited(reply_text, candidates)
                 async with self._session_factory() as session:
-                    reply = Message(conversation_id=conversation_id, role="assistant", content=reply_text)
+                    reply = Message(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=reply_text,
+                        citations=[citation.model_dump() for citation in citations] or None,
+                    )
                     session.add(reply)
                     await session.commit()
             except ReplyFailedError as error:
@@ -199,7 +212,10 @@ class ConversationService:
                 yield ReplyEvent("error", {"detail": "回复生成失败，请稍后重试"})
                 return
 
-            yield ReplyEvent("message.done", {"message_id": reply.id})
+            yield ReplyEvent(
+                "message.done",
+                {"message_id": reply.id, "citations": [citation.model_dump() for citation in citations]},
+            )
 
     async def _load_recent_history(self, session: AsyncSession, conversation_id: int) -> list[BaseMessage]:
         """交给模型的最近历史。确认卡片按操作的当前状态描述，模型据此回答“提交成功了吗”。"""

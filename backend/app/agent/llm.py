@@ -15,10 +15,16 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
 
+from app.agent.chat_graph import KNOWLEDGE_TOOL
+from app.citations import quote
 from app.config import Settings
 
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_RETRIES = 2
+
+# 消息里出现这些词，先查知识库（比“退货”“订单”这些个人记录的词优先），比如“退货政策是什么”
+OFFLINE_KNOWLEDGE_WORDS = ("政策", "规则", "规定", "说明", "保修", "运费")
+OFFLINE_NO_EVIDENCE_REPLY = "知识库里没有找到能回答这个问题的说明。如需进一步帮助，可以说“转人工”"
 
 # 离线模型的“规则”：消息里出现这些词，就用对应的参数调用查询工具（搜索商品时关键词为空，列出全部商品）
 OFFLINE_KEYWORD_TOOLS: dict[str, tuple[str, dict[str, Any]]] = {
@@ -32,6 +38,7 @@ OFFLINE_TOOL_LABELS = {
     "list_my_returns": "退货申请",
     "list_my_tickets": "工单",
     "search_products": "商品",
+    KNOWLEDGE_TOOL: "知识库",
 }
 # 列出工单、退货申请时，逐条说明处理状态：（状态 → 文字，说明字段，说明的叫法）
 OFFLINE_RECORD_STATUS = {
@@ -75,12 +82,14 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
 
 
 class OfflineChatModel(BaseChatModel):
-    """离线聊天模型：不联网、不需要 Key，按固定规则回复，用来在没有真实模型时走通整个流程。
-    - 形如“下单 商品 3”时预览购买商品 3（“2 件”表示买两件）；消息里有“转人工”时发起转人工预览；
-      形如“撤回退货 3”时预览撤回退货申请 3；形如“退货 订单项 3”时预览退货订单项 3（不会替用户在多件商品里做选择）；
-    - 消息里有“订单”“退货”“工单”“商品”且绑定了对应工具时，调用那个查询工具；
-    - 收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果，商品会列出编号、价格和库存；
-    - 其他情况把用户的话按固定格式逐字返回。
+    """离线聊天模型：不联网、不需要 Key，按固定规则回复，用来在没有真实模型时走通整个流程。按顺序匹配：
+    1. 发起待确认操作：形如“下单 商品 3”时预览购买商品 3（“2 件”表示买两件）；消息里有“转人工”时发起转人工预览；
+       形如“撤回退货 3”时预览撤回退货申请 3；形如“退货 订单项 3”时预览退货订单项 3（不会替用户在多件商品里做选择）；
+    2. 消息里有“政策”“保修”这类知识类的词时，查知识库；
+    3. 消息里有“订单”“退货”“工单”“商品”时，调用对应的查询工具；
+    4. 其余的消息都查知识库；没有绑定知识库工具时，把用户的话按固定格式逐字返回。
+    收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果，商品会列出编号、价格和库存；
+    查到知识库的依据时，按引用格式摘录排在第一的那段原文，没有依据时直说没有找到。
     """
 
     chunk_delay_seconds: float = 0.03
@@ -133,9 +142,14 @@ class OfflineChatModel(BaseChatModel):
             tool_name, arguments = proposal
             if tool_name in self.tool_names:
                 return _call(tool_name, arguments)
+        can_search = KNOWLEDGE_TOOL in self.tool_names
+        if can_search and any(word in question for word in OFFLINE_KNOWLEDGE_WORDS):
+            return _call(KNOWLEDGE_TOOL, {"question": question})
         for keyword, (tool_name, arguments) in OFFLINE_KEYWORD_TOOLS.items():
             if keyword in question and tool_name in self.tool_names:
                 return _call(tool_name, arguments)
+        if can_search:
+            return _call(KNOWLEDGE_TOOL, {"question": question})
         return AIMessage(f"（离线模式）收到你的消息：{question}")
 
 
@@ -184,6 +198,9 @@ def _summarize_tool_results(results: list[ToolMessage]) -> str:
             parts.append(f"查询{label}失败")
             continue
         records = _records_in(result)
+        if result.name == KNOWLEDGE_TOOL:
+            parts.append(_knowledge_answer(records[0] if records else {}))
+            continue
         if result.name == "search_products" and records:
             parts.append(f"查到 {len(records)} 个商品：" + "；".join(_product_line(record) for record in records))
             continue
@@ -193,6 +210,15 @@ def _summarize_tool_results(results: list[ToolMessage]) -> str:
         ids = "、".join(str(record["id"]) for record in records if "id" in record)
         parts.append(f"查到 {len(records)} 条{label}" + (f"（编号 {ids}）" if ids else ""))
     return "（离线模式）" + "；".join(parts) + "。"
+
+
+def _knowledge_answer(evidence: dict[str, Any]) -> str:
+    """有依据时按引用格式摘录排在第一的那段原文，并写明出处；没有依据时直说。"""
+    passages = evidence.get("passages") if evidence.get("status") == "supported" else None
+    if not passages:
+        return OFFLINE_NO_EVIDENCE_REPLY
+    first = passages[0]
+    return f"根据《{first['document_title']}》“{first['section']}”：{quote(first['content'], first['source_id'])}"
 
 
 def _with_status(record: dict[str, Any], status_text: dict[str, str], detail_field: str, detail_name: str) -> str:

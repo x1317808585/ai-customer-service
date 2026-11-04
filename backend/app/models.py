@@ -57,6 +57,8 @@ class Message(Base):
     )
     role: Mapped[MessageRole] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
+    # 助手回复引用的知识库原文快照（出处和原文），没有引用时为空。知识库重建后也不变
+    citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     created_at: Mapped[CreatedAt]
 
     # 这条消息是一张确认卡片时，对应的待确认操作

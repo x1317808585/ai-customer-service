@@ -22,6 +22,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 PENDING_ACTIONS = "8e8cacb502b2"  # 10A：待确认操作
 ACTION_KINDS = "f7d42726c26d"  # 10B：撤回退货、转人工、工单来源会话
 STAFF_RESOLUTION = "3c5a91d0b7e2"  # 11A：工单和退货的处理信息
+KNOWLEDGE_CHUNKS = "13a4e21a91ea"  # 12A：知识库
+CITATIONS = "8acbab16965e"  # 12B：回复引用的原文快照
 
 
 def run_alembic(*args: str, expect_failure: bool = False) -> str:
@@ -230,3 +232,22 @@ async def test_staff_resolution_downgrade_is_refused_instead_of_destroying_data(
 
     assert "不能降级" in errors
     assert await current_version(engine) == STAFF_RESOLUTION
+
+
+# ---------- 12B：有引用时拒绝降级 ----------
+
+
+async def test_citations_downgrade_is_refused_instead_of_destroying_data(engine: AsyncEngine) -> None:
+    run_alembic("upgrade", CITATIONS)
+    await execute(
+        engine,
+        "INSERT INTO users (username, role) VALUES ('alice', 'customer')",
+        "INSERT INTO conversations (user_id, title) VALUES (1, '退货')",
+        "INSERT INTO messages (conversation_id, role, content, citations)"
+        " VALUES (1, 'assistant', '回复', '[{\"source_id\": \"return-policy#退货期限\"}]')",
+    )
+
+    errors = run_alembic("downgrade", KNOWLEDGE_CHUNKS, expect_failure=True)
+
+    assert "不能降级" in errors
+    assert await current_version(engine) == CITATIONS

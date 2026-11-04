@@ -10,13 +10,16 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Tool
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import Field
 
-from app.agent.llm import OfflineChatModel
+from app.agent.llm import OFFLINE_NO_EVIDENCE_REPLY, OfflineChatModel
 from app.agent.mcp_toolbox import McpToolbox
 from app.agent.reply_agent import TOOLS_UNAVAILABLE_MESSAGE
 from app.config import Settings
 from app.models import Order, User
 from tests.agent.doubles import FakeToolbox, ScriptedChatModel, blocking_tool, calls_tools
 from tests.api.chat_api import create_conversation, displayed_text, get_history, get_title, send_message
+
+# 离线模型对“你好”这类消息会查知识库，测试库里没有导入知识库，所以回复都是“没有找到”
+NO_EVIDENCE_REPLY = f"（离线模式）{OFFLINE_NO_EVIDENCE_REPLY}。"
 
 OpenClient = Callable[..., AbstractAsyncContextManager[AsyncClient]]
 OpenServer = Callable[..., AbstractAsyncContextManager[AsyncClient]]
@@ -100,7 +103,7 @@ async def test_reply_streams_as_accepted_then_deltas_then_done(client: AsyncClie
     assert names[-1] == "message.done"
     deltas = [data["text"] for name, data in events if name == "message.delta"]
     assert len(deltas) > 1
-    assert "".join(deltas) == "（离线模式）收到你的消息：你好"
+    assert "".join(deltas) == NO_EVIDENCE_REPLY
 
 
 async def test_history_after_done_has_user_message_then_reply(client: AsyncClient) -> None:
@@ -113,7 +116,7 @@ async def test_history_after_done_has_user_message_then_reply(client: AsyncClien
     history = await get_history(client, conversation_id)
     assert [(m["id"], m["role"], m["content"]) for m in history] == [
         (accepted_id, "user", "你好"),
-        (done_id, "assistant", "（离线模式）收到你的消息：你好"),
+        (done_id, "assistant", NO_EVIDENCE_REPLY),
     ]
 
 
@@ -142,10 +145,10 @@ async def test_second_turn_gives_model_previous_turn_in_order(open_client: OpenC
         await send_message(client, conversation_id, "第一句")
         await send_message(client, conversation_id, "第二句")
 
-    second_call = model.received[1]
+    second_call = next(messages for messages in model.received if messages[-1].text == "第二句")
     assert [(message.type, message.text) for message in second_call[1:]] == [
         ("human", "第一句"),
-        ("ai", "（离线模式）收到你的消息：第一句"),
+        ("ai", NO_EVIDENCE_REPLY),
         ("human", "第二句"),
     ]
     assert second_call[0].type == "system"
