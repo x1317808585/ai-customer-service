@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { CAROL, FakeBackend, returnAction } from "./fakeBackend";
+import { CAROL, FakeBackend, orderAction, returnAction } from "./fakeBackend";
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -232,4 +232,23 @@ test("往上翻看时，新回复不会把页面拉到底部，而是提示有�
   await page.getByRole("button", { name: "有新消息" }).click();
   await expect(messageList(page).getByText("这是新的回复")).toBeInViewport();
   await expect(page.getByRole("button", { name: "有新消息" })).toHaveCount(0);
+});
+
+test("下单卡片显示每种商品的数量、单价和合计，确认后显示模拟订单号", async ({ page }) => {
+  const backend = await openChat(page, (backend) => {
+    backend.addConversation(CONVERSATION);
+    backend.replies.push([{ type: "card", action: orderAction({ id: 8 }) }, { type: "done" }]);
+  });
+
+  await send(page, "下单商品 1");
+  const orderCard = page.getByRole("article", { name: "下单" });
+
+  await expect(orderCard).toContainText("SoundPods 降噪耳机 × 1，单价 ¥599.00");
+  await expect(orderCard).toContainText("USB-C 快充线 1 米 × 2，单价 ¥39.00");
+  await expect(orderCard).toContainText("合计¥677.00");
+  await orderCard.getByRole("button", { name: "确认下单" }).click();
+
+  await expect(orderCard).toContainText("模拟订单已创建，订单号 21");
+  await expect(orderCard.getByRole("button")).toHaveCount(0);
+  expect(backend.count("POST", "/api/actions/8/confirm")).toBe(1);
 });

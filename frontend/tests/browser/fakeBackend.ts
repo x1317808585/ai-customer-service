@@ -77,6 +77,25 @@ export function returnAction(changes: Partial<ActionView> & { id: number }): Act
   } as ActionView;
 }
 
+/** 一张待确认的下单卡片：两种商品。 */
+export function orderAction(changes: Partial<ActionView> & { id: number }): ActionView {
+  return {
+    kind: "order",
+    status: "pending",
+    error: null,
+    expires_at: "2099-01-01T00:00:00Z",
+    preview: {
+      lines: [
+        { product_id: 1, product_name: "SoundPods 降噪耳机", unit_price_cents: 59900, quantity: 1 },
+        { product_id: 2, product_name: "USB-C 快充线 1 米", unit_price_cents: 3900, quantity: 2 },
+      ],
+      total_cents: 67700,
+    },
+    result: null,
+    ...changes,
+  } as ActionView;
+}
+
 /** 助手回复脚本的一步。card 表示助手提议了一项待确认操作。 */
 export type ReplyStep =
   | { type: "delta"; text: string }
@@ -234,7 +253,7 @@ export class FakeBackend {
       if (actionMatch[2] === "/cancel") {
         action.status = "cancelled";
       } else {
-        Object.assign(action, { status: "executed", result: { return_id: 12, ticket_id: 3 } });
+        Object.assign(action, { status: "executed", result: { order_id: 21, return_id: 12, ticket_id: 3 } });
       }
       return { status: 200, body: action };
     }

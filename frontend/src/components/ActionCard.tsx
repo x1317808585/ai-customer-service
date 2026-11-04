@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Package,
   RefreshCw,
+  ShoppingBag,
   TimerOff,
   type LucideIcon,
 } from "lucide-react";
@@ -22,6 +23,7 @@ import {
   formatValidUntil,
   type ActionView,
   type CardState,
+  type OrderPreview,
   type ReturnCancellationPreview,
   type ReturnRequestPreview,
   type TicketPreview,
@@ -58,6 +60,13 @@ const STATE_STYLES: Record<CardState, { label: string; icon: LucideIcon; classNa
   failed: { label: "失败", icon: CircleAlert, className: "bg-status-danger-bg text-status-danger" },
 };
 
+const KIND_ICONS: Record<ActionView["kind"], LucideIcon> = {
+  order: ShoppingBag,
+  return_request: Package,
+  return_cancellation: Package,
+  ticket: Headset,
+};
+
 /** 待确认操作的卡片。内容全部来自服务器计算的预览，不来自模型说的话。 */
 export function ActionCard(props: Props) {
   const { action } = props;
@@ -67,7 +76,7 @@ export function ActionCard(props: Props) {
   const unverified = props.mode === "interactive" && props.unverified;
   const state = cardState(action, { submitting: busy, unverified, now });
   const style = STATE_STYLES[state];
-  const KindIcon = action.kind === "ticket" ? Headset : Package;
+  const KindIcon = KIND_ICONS[action.kind];
   const showButtons = props.mode === "interactive" && (state === "pending" || state === "submitting");
 
   return (
@@ -157,6 +166,8 @@ const MAX_TIMEOUT = 2 ** 31 - 1;
 /** 按操作类型显示预览内容。 */
 function ActionDetails({ action }: { action: ActionView }) {
   switch (action.kind) {
+    case "order":
+      return <OrderDetails preview={action.preview} />;
     case "return_request":
       return <ReturnRequestDetails preview={action.preview} />;
     case "return_cancellation":
@@ -164,6 +175,19 @@ function ActionDetails({ action }: { action: ActionView }) {
     case "ticket":
       return <TicketDetails preview={action.preview} />;
   }
+}
+
+function OrderDetails({ preview }: { preview: OrderPreview }) {
+  return (
+    <>
+      {preview.lines.map((line) => (
+        <Row key={line.product_id} label="商品">
+          {line.product_name} × {line.quantity}，单价 ¥{formatCents(line.unit_price_cents)}
+        </Row>
+      ))}
+      <Row label="合计">¥{formatCents(preview.total_cents)}</Row>
+    </>
+  );
 }
 
 function ReturnRequestDetails({ preview }: { preview: ReturnRequestPreview }) {

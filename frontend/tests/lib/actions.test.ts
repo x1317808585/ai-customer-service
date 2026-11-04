@@ -32,6 +32,19 @@ function returnRequest(status: ActionStatus, changes: Partial<ActionView> = {}):
   } as ActionView;
 }
 
+function order(status: ActionStatus): ActionView {
+  return {
+    ...COMMON,
+    kind: "order",
+    status,
+    preview: {
+      lines: [{ product_id: 1, product_name: "SoundPods 降噪耳机", unit_price_cents: 59900, quantity: 1 }],
+      total_cents: 59900,
+    },
+    result: status === "executed" ? { order_id: 21 } : null,
+  } as ActionView;
+}
+
 function returnCancellation(status: ActionStatus, changes: Partial<ActionView> = {}): ActionView {
   return {
     ...COMMON,
@@ -98,6 +111,8 @@ describe("确认卡片的文字", () => {
   });
 
   it("只有 executed 才说已经完成，并带上编号", () => {
+    expect(describe_(order("pending"))).toBe("确认后才会创建订单（模拟订单，不含支付）");
+    expect(describe_(order("executed"))).toBe("模拟订单已创建，订单号 21");
     expect(describe_(returnRequest("executed"))).toBe("已提交，退货单号 12");
     expect(describe_(returnCancellation("executed"))).toBe("已撤回退货申请 12");
     expect(describe_(ticket("executed"))).toBe("已创建工单 #3，等待人工处理");

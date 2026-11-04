@@ -1,6 +1,12 @@
-/** 待确认操作（退货申请、撤回退货申请、转人工）的类型，以及确认卡片上显示的文字。 */
+/** 待确认操作（下单、退货申请、撤回退货申请、转人工）的类型，以及确认卡片上显示的文字。 */
 
 export type ActionStatus = "pending" | "executed" | "cancelled" | "failed" | "expired";
+
+/** 下单预览：每种商品的数量和单价（分），以及总额。确认时价格变了，服务器会拒绝。 */
+export type OrderPreview = {
+  lines: { product_id: number; product_name: string; unit_price_cents: number; quantity: number }[];
+  total_cents: number;
+};
 
 export type ReturnRequestPreview = {
   order_id: number;
@@ -32,8 +38,13 @@ type ActionCommon = {
   expires_at: string;
 };
 
-/** 按 kind 区分的三种操作：TypeScript 能据此检查每种操作的预览和结果字段。 */
+/** 按 kind 区分的四种操作：TypeScript 能据此检查每种操作的预览和结果字段。 */
 export type ActionView =
+  | (ActionCommon & {
+      kind: "order";
+      preview: OrderPreview;
+      result: { order_id: number } | null;
+    })
   | (ActionCommon & {
       kind: "return_request";
       preview: ReturnRequestPreview;
@@ -64,6 +75,15 @@ type ActionTexts = {
 
 /** 每种操作的文字。撤回卡片不用“取消”二字，免得和“撤回退货申请”混淆。 */
 const ACTION_TEXTS: Record<ActionKind, ActionTexts> = {
+  order: {
+    title: "下单",
+    confirmLabel: "确认下单",
+    dismissLabel: "取消",
+    pending: "确认后才会创建订单（模拟订单，不含支付）",
+    cancelled: "已取消，没有下单",
+    expired: "已过期，没有下单。如仍需购买，请重新发起",
+    failed: (error) => `下单失败：${error}。可以重新发起`,
+  },
   return_request: {
     title: "退货申请",
     confirmLabel: "确认提交",
@@ -162,6 +182,8 @@ export function formatValidUntil(expiresAt: string, timeZone?: string): string {
 
 function describeExecuted(action: ActionView): string {
   switch (action.kind) {
+    case "order":
+      return `模拟订单已创建，订单号 ${action.result?.order_id ?? "未知"}`;
     case "return_request":
       return `已提交，退货单号 ${action.result?.return_id ?? "未知"}`;
     case "return_cancellation":
