@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Text, func, true
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, func, true
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 UserRole = Literal["customer", "admin"]
@@ -213,3 +213,19 @@ class PendingAction(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[CreatedAt]
+
+
+class KnowledgeChunk(Base):
+    """知识库里的一个小节：说明文档按“## 小节标题”切开后的一段原文。整个知识库重建时全部替换。"""
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (Index("ix_knowledge_chunks_search_vector", "search_vector", postgresql_using="gin"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # 来源标识：“文件名#小节标题”，文件名和小节标题不变，重建后也不变
+    source_id: Mapped[str] = mapped_column(String(200), unique=True)
+    document_title: Mapped[str] = mapped_column(String(100))
+    section: Mapped[str] = mapped_column(String(100))
+    content: Mapped[str] = mapped_column(Text)
+    # 文档标题、小节标题和原文分词后的词，用来做全文检索
+    search_vector: Mapped[str] = mapped_column(TSVECTOR)

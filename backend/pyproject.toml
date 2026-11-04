@@ -6,6 +6,7 @@ dependencies = [
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi[standard]>=0.147.0",
+    "jieba>=0.42.1",
     "langchain-core>=1.7.0",
     "langchain-mcp-adapters>=0.3.2",
     "langchain-openai>=1.7.2",
