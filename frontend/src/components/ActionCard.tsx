@@ -6,6 +6,7 @@ import {
   CircleSlash,
   Clock,
   Headset,
+  Info,
   LoaderCircle,
   Package,
   RefreshCw,
@@ -83,26 +84,28 @@ export function ActionCard(props: Props) {
     <article
       aria-label={texts.title}
       data-action-id={action.id}
-      className="w-full max-w-md rounded-xl border bg-card p-4 text-sm text-card-foreground shadow-sm"
+      className="w-full max-w-lg rounded-xl border bg-card p-5 text-sm text-card-foreground shadow-sm"
     >
       <header className="flex items-center gap-3">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary text-muted-foreground">
           <KindIcon aria-hidden className="size-5" />
         </span>
-        <h3 className="flex-1 text-base font-medium">{texts.title}</h3>
+        <h3 className="flex-1 text-base font-semibold">{texts.title}</h3>
         <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${style.className}`}>
           <style.icon aria-hidden className={`size-3.5 ${state === "submitting" ? "animate-spin" : ""}`} />
           {style.label}
         </span>
       </header>
 
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
+      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 border-t pt-4">
         <ActionDetails action={action} />
       </dl>
 
-      <p className={`mt-3 text-[13px] ${state === "failed" ? "text-status-danger" : "text-muted-foreground"}`}>
-        {describeCard(action, state)}
-      </p>
+      {!showButtons && (
+        <p className={`mt-3 text-[13px] ${state === "failed" ? "text-status-danger" : "text-muted-foreground"}`}>
+          {describeCard(action, state)}
+        </p>
+      )}
 
       {props.mode === "interactive" && state === "unverified" && (
         <div className="mt-4 flex justify-end border-t pt-3">
@@ -120,8 +123,14 @@ export function ActionCard(props: Props) {
 
       {showButtons && (
         <div className="mt-4 flex items-center justify-between gap-3 border-t pt-3">
-          <span className="text-xs text-muted-foreground">{formatValidUntil(action.expires_at)}</span>
-          <div className="flex gap-2">
+          <div className="min-w-0 text-muted-foreground">
+            <p className="flex items-center gap-1.5 text-[13px]">
+              <Info aria-hidden className="size-4 shrink-0" />
+              {describeCard(action, state)}
+            </p>
+            <p className="mt-0.5 pl-5.5 text-xs">{formatValidUntil(action.expires_at)}</p>
+          </div>
+          <div className="flex shrink-0 gap-2">
             <Button
               variant="outline"
               disabled={busy}
@@ -193,14 +202,14 @@ function OrderDetails({ preview }: { preview: OrderPreview }) {
 function ReturnRequestDetails({ preview }: { preview: ReturnRequestPreview }) {
   return (
     <>
-      <Row label="订单">
-        {preview.order_id}（订单项 {preview.order_item_id}）
-      </Row>
       <Row label="商品">
         {preview.product_name} × {preview.quantity}
       </Row>
-      <Row label="退款">¥{formatCents(preview.refund_cents)}</Row>
-      <Row label="原因">{preview.reason}</Row>
+      <Row label="订单编号">
+        #{preview.order_id}（订单项 {preview.order_item_id}）
+      </Row>
+      <Row label="预计退款">¥{formatCents(preview.refund_cents)}</Row>
+      <Row label="退货原因">{preview.reason}</Row>
     </>
   );
 }
@@ -208,12 +217,12 @@ function ReturnRequestDetails({ preview }: { preview: ReturnRequestPreview }) {
 function ReturnCancellationDetails({ preview }: { preview: ReturnCancellationPreview }) {
   return (
     <>
-      <Row label="退货单">{preview.return_id}</Row>
-      <Row label="订单">{preview.order_id}</Row>
       <Row label="商品">
         {preview.product_name} × {preview.quantity}
       </Row>
-      <Row label="退款">¥{formatCents(preview.refund_cents)}</Row>
+      <Row label="退货单号">#{preview.return_id}</Row>
+      <Row label="订单编号">#{preview.order_id}</Row>
+      <Row label="退款金额">¥{formatCents(preview.refund_cents)}</Row>
     </>
   );
 }
@@ -221,8 +230,8 @@ function ReturnCancellationDetails({ preview }: { preview: ReturnCancellationPre
 function TicketDetails({ preview }: { preview: TicketPreview }) {
   return (
     <>
-      {preview.order_id !== null && <Row label="订单">{preview.order_id}</Row>}
-      <Row label="摘要">{preview.summary}</Row>
+      {preview.order_id !== null && <Row label="订单编号">#{preview.order_id}</Row>}
+      <Row label="问题摘要">{preview.summary}</Row>
     </>
   );
 }

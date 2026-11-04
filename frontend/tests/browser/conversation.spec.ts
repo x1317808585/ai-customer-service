@@ -50,7 +50,7 @@ test("顺序是用户消息、确认卡片、助手说明，刷新后不变", as
 async function expectOrder(page: Page) {
   const items = messageList(page).getByRole("listitem");
   await expect(items).toHaveCount(3);
-  await expect(items.nth(0)).toHaveText("我想退货，订单项 9");
+  await expect(items.nth(0)).toContainText("我想退货，订单项 9");
   await expect(items.nth(1).getByRole("article", { name: "退货申请" })).toBeVisible();
   await expect(items.nth(2)).toHaveText("请核对上方卡片");
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { groupConversations } from "@/lib/customer/display";
+import { formatConversationTime, formatMessageTime, groupConversations } from "@/lib/customer/display";
 
 const conversation = (id: number, created_at: string) => ({ id, title: `会话 ${id}`, created_at });
 
@@ -27,5 +27,19 @@ describe("groupConversations", () => {
     const groups = groupConversations([conversation(1, "2026-10-20T00:00:00Z")], new Date("2026-10-28T00:00:00Z"), "UTC");
 
     expect(groups.map((group) => group.label)).toEqual(["更早"]);
+  });
+});
+
+describe("时间显示", () => {
+  const now = new Date("2026-10-28T10:00:00Z"); // 悉尼 10-28 21:00
+
+  it("今天的只显示时刻，更早的带上日期", () => {
+    const today = "2026-10-27T23:24:00Z"; // 悉尼 10-28 10:24
+    const earlier = "2026-10-27T12:30:00Z"; // 悉尼 10-27 23:30
+
+    expect(formatConversationTime(today, now, "Australia/Sydney")).toBe("10:24");
+    expect(formatConversationTime(earlier, now, "Australia/Sydney")).toBe("10月27日");
+    expect(formatMessageTime(today, now, "Australia/Sydney")).toBe("10:24");
+    expect(formatMessageTime(earlier, now, "Australia/Sydney")).toBe("10月27日 23:30");
   });
 });

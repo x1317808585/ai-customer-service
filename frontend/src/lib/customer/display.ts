@@ -28,9 +28,39 @@ export function groupConversations(
   return groups.filter((group) => group.conversations.length > 0);
 }
 
+/** 会话列表右侧的时间：今天的显示“10:24”，更早的显示“4月16日”。 */
+export function formatConversationTime(createdAt: string, now: Date, timeZone?: string): string {
+  const date = new Date(createdAt);
+  return isSameDay(date, now, timeZone) ? clockOf(date, timeZone) : monthDayOf(date, timeZone);
+}
+
+/** 消息下方的时间：今天的显示“10:24”，更早的显示“4月16日 10:24”。 */
+export function formatMessageTime(createdAt: string, now: Date, timeZone?: string): string {
+  const date = new Date(createdAt);
+  const clock = clockOf(date, timeZone);
+  return isSameDay(date, now, timeZone) ? clock : `${monthDayOf(date, timeZone)} ${clock}`;
+}
+
+function isSameDay(date: Date, now: Date, timeZone?: string): boolean {
+  return dayOf(date, timeZone) === dayOf(now, timeZone);
+}
+
 /** 某个时刻在指定时区里是哪一天，比如 "2026-10-28"。 */
 function dayOf(date: Date, timeZone?: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(
     date,
   );
+}
+
+/** "10:24" */
+function clockOf(date: Date, timeZone?: string): string {
+  return new Intl.DateTimeFormat("zh-CN", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(
+    date,
+  );
+}
+
+/** "4月16日"。自己拼，不同浏览器对 zh-CN 月日格式的输出不一样（有的是 "4/16"）。 */
+function monthDayOf(date: Date, timeZone?: string): string {
+  const [month, day] = dayOf(date, timeZone).split("-").slice(1).map(Number);
+  return `${month}月${day}日`;
 }

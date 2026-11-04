@@ -22,6 +22,8 @@ export type DisplayMessage = {
   key: string;
   role: "user" | "assistant";
   content: string;
+  /** 发送或保存的时间。刚发出、还没从服务器读回的消息用本机时间。 */
+  createdAt: string;
   streaming: boolean;
   /** 生成过程中的工具调用进度，只在生成期间显示，不会保存。 */
   tools: ToolProgress[];
@@ -170,10 +172,11 @@ export function useChat() {
       const now = Date.now();
       const questionKey = `question-${now}`;
       const replyKey = `reply-${now}`;
+      const createdAt = new Date(now).toISOString();
       setMessages((previous) => [
         ...previous,
-        { key: questionKey, role: "user", content: text, streaming: false, tools: [], action: null },
-        { key: replyKey, role: "assistant", content: "", streaming: true, tools: [], action: null },
+        { key: questionKey, role: "user", content: text, createdAt, streaming: false, tools: [], action: null },
+        { key: replyKey, role: "assistant", content: "", createdAt, streaming: true, tools: [], action: null },
       ]);
       const updateReply = (change: (message: DisplayMessage) => DisplayMessage) =>
         setMessages((previous) =>
@@ -209,6 +212,7 @@ export function useChat() {
               key: `message-${messageId}`,
               role: "assistant",
               content: "",
+              createdAt: new Date().toISOString(),
               streaming: false,
               tools: [],
               action,
@@ -377,6 +381,7 @@ function toDisplayMessage(message: ChatMessage): DisplayMessage {
     key: `message-${message.id}`,
     role: message.role,
     content: message.content,
+    createdAt: message.created_at,
     streaming: false,
     tools: [],
     action: message.action,

@@ -1,9 +1,12 @@
-import { ArrowDown } from "lucide-react";
+import { useState } from "react";
+import { ArrowDown, User } from "lucide-react";
 
 import { ActionCard } from "@/components/ActionCard";
+import { HeyiMark } from "@/components/HeyiMark";
 import { Button } from "@/components/ui/button";
 import type { DisplayMessage } from "@/hooks/customer/useChat";
 import { useStickToBottom } from "@/hooks/customer/useStickToBottom";
+import { formatMessageTime } from "@/lib/customer/display";
 import { describeToolProgress } from "@/lib/customer/replyDraft";
 
 /** 空会话里的快捷问题。点了只填进输入框，由用户补充后自己发送。 */
@@ -31,6 +34,8 @@ export function MessageList({
   onPickQuestion,
 }: Props) {
   const { scrollRef, onScroll, hasNewMessages, scrollToBottom } = useStickToBottom(messages);
+  // 判断消息是不是“今天”的，以打开页面的时刻为准
+  const [openedAt] = useState(() => new Date());
 
   if (messages.length === 0) {
     return (
@@ -56,26 +61,38 @@ export function MessageList({
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <ol aria-label="消息记录" className="mx-auto w-full max-w-[760px] space-y-5 px-6 py-6">
-          {messages.map((message, index) => (
-            <li key={message.key} className={message.role === "user" ? "flex flex-col items-end" : "flex gap-3"}>
-              {message.role === "assistant" && <AssistantAvatar visible={messages[index - 1]?.role !== "assistant"} />}
-              {message.action ? (
-                <ActionCard
-                  mode="interactive"
-                  action={message.action}
-                  busy={busyActionIds.has(message.action.id)}
-                  unverified={unverifiedActionIds.has(message.action.id)}
-                  checking={checkingActionIds.has(message.action.id)}
-                  onConfirm={onConfirmAction}
-                  onCancel={onCancelAction}
-                  onRecheck={onRecheckAction}
-                />
-              ) : (
-                <MessageBubble message={message} />
-              )}
-              {isUnanswered(messages, index) && <span className="mt-1 text-xs text-muted-foreground">未收到回复</span>}
-            </li>
-          ))}
+          {messages.map((message, index) =>
+            message.role === "user" ? (
+              <li key={message.key} className="flex items-start justify-end gap-3">
+                <div className="flex max-w-[75%] min-w-0 flex-col items-end">
+                  <MessageBubble message={message} />
+                  <span className="mt-1 text-xs text-muted-foreground">
+                    {formatMessageTime(message.createdAt, openedAt)}
+                    {isUnanswered(messages, index) && " · 未收到回复"}
+                  </span>
+                </div>
+                <UserAvatar />
+              </li>
+            ) : (
+              <li key={message.key} className="flex gap-3">
+                <AssistantAvatar visible={messages[index - 1]?.role !== "assistant"} />
+                {message.action ? (
+                  <ActionCard
+                    mode="interactive"
+                    action={message.action}
+                    busy={busyActionIds.has(message.action.id)}
+                    unverified={unverifiedActionIds.has(message.action.id)}
+                    checking={checkingActionIds.has(message.action.id)}
+                    onConfirm={onConfirmAction}
+                    onCancel={onCancelAction}
+                    onRecheck={onRecheckAction}
+                  />
+                ) : (
+                  <MessageBubble message={message} />
+                )}
+              </li>
+            ),
+          )}
         </ol>
       </div>
       {hasNewMessages && (
@@ -94,13 +111,18 @@ export function MessageList({
 
 /** 连续的助手消息只在第一条显示头像，后面的留出同样的宽度保持对齐。 */
 function AssistantAvatar({ visible }: { visible: boolean }) {
-  if (!visible) return <span aria-hidden className="w-8 shrink-0" />;
+  if (!visible) return <span aria-hidden className="w-9 shrink-0" />;
   return (
-    <span
-      aria-hidden
-      className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground"
-    >
-      合
+    <span aria-hidden className="flex size-9 shrink-0 items-center justify-center rounded-full border bg-card">
+      <HeyiMark className="size-5 text-primary" />
+    </span>
+  );
+}
+
+function UserAvatar() {
+  return (
+    <span aria-hidden className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-primary">
+      <User className="size-5" />
     </span>
   );
 }
@@ -110,7 +132,7 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
   return (
     <div
       className={`min-w-0 rounded-2xl px-4 py-2.5 text-base leading-[1.7] whitespace-pre-wrap [overflow-wrap:anywhere] ${
-        isUser ? "max-w-[75%] bg-bubble-user" : "max-w-full bg-bubble-assistant"
+        isUser ? "bg-bubble-user" : "max-w-full bg-bubble-assistant"
       }`}
     >
       {message.streaming && message.tools.length > 0 && (

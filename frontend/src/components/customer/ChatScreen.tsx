@@ -41,7 +41,7 @@ export function ChatScreen({ user, onLogOut }: Props) {
       />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 shrink-0 items-center border-b bg-card px-6">
-          <h1 title={title} className="truncate text-base font-medium">
+          <h1 title={title} className="truncate text-lg font-semibold">
             {title}
           </h1>
         </header>

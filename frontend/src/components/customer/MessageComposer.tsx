@@ -57,30 +57,31 @@ export function MessageComposer({ draft, onDraftChange, inputRef, busy, replying
     <div className="shrink-0 px-6 pb-6">
       <form
         onSubmit={handleSubmit}
-        className="mx-auto flex w-full max-w-[760px] items-end gap-2 rounded-xl border border-input bg-card p-2 shadow-sm transition-shadow duration-150 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25"
+        className="mx-auto w-full max-w-[760px] rounded-xl border border-input bg-card px-3 pt-3 pb-2 shadow-sm transition-shadow duration-150 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25"
       >
-        <textarea
-          ref={inputRef}
-          value={draft}
-          onChange={(event) => onDraftChange(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          aria-label="输入消息"
-          rows={1}
-          maxLength={MAX_MESSAGE_LENGTH}
-          className="min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-base leading-[1.7] outline-none placeholder:text-muted-foreground"
-        />
-        {replying ? (
-          <Button type="button" variant="secondary" onClick={onStop} className="h-10 gap-1.5 px-4">
-            <Square aria-hidden className="fill-current" />
-            停止
-          </Button>
-        ) : (
-          <Button type="submit" disabled={!canSend} className="h-10 gap-1.5 px-4 hover:bg-primary-hover">
-            <ArrowUp aria-hidden />
-            发送
-          </Button>
-        )}
+        <div className="flex items-start gap-2">
+          <textarea
+            ref={inputRef}
+            value={draft}
+            onChange={(event) => onDraftChange(event.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="描述你遇到的问题…"
+            aria-label="输入消息"
+            rows={2}
+            maxLength={MAX_MESSAGE_LENGTH}
+            className="min-w-0 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-1 text-base leading-[1.7] outline-none placeholder:text-muted-foreground"
+          />
+          {replying ? (
+            <Button type="button" variant="secondary" onClick={onStop} aria-label="停止" className="size-10">
+              <Square aria-hidden className="fill-current" />
+            </Button>
+          ) : (
+            <Button type="submit" disabled={!canSend} aria-label="发送" className="size-10 hover:bg-primary-hover">
+              <ArrowUp aria-hidden className="size-5" />
+            </Button>
+          )}
+        </div>
+        <p className="mt-1 px-1 text-right text-xs text-muted-foreground">Enter 发送 · Shift + Enter 换行</p>
       </form>
     </div>
   );
