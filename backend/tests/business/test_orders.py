@@ -13,6 +13,7 @@ from app.business.orders import (
     InvalidOrderError,
     OrderLine,
     OrderNotFoundError,
+    OrderPriceChangedError,
     Orders,
     OutOfStockError,
 )
@@ -220,3 +221,75 @@ async def test_database_refuses_negative_stock(
     async with session_factory() as session:
         with pytest.raises(IntegrityError):
             await session.execute(update(Product).where(Product.id == earbuds).values(stock=-1))
+
+
+# ---------- 预览和按确认的报价下单 ----------
+
+
+async def test_preview_quotes_server_prices_without_touching_stock(
+    orders: Orders, add_product: AddProduct, session_factory: SessionFactory
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机", price_cents=59900, stock=5)
+    cable = await add_product("USB-C 充电线", price_cents=3900, stock=5)
+
+    preview = await orders.preview_order(
+        [OrderLine(product_id=earbuds, quantity=1), OrderLine(product_id=cable, quantity=2)]
+    )
+
+    assert [(line.product_name, line.unit_price_cents, line.quantity) for line in preview.lines] == [
+        ("SoundPods 降噪耳机", 59900, 1),
+        ("USB-C 充电线", 3900, 2),
+    ]
+    assert preview.total_cents == 67700
+    assert await stock_of(session_factory, earbuds) == 5
+    assert await order_count(session_factory) == 0
+
+
+async def test_order_size_limits_apply_to_preview_and_order(
+    orders: Orders, users: dict[str, User], add_product: AddProduct
+) -> None:
+    products = [await add_product(f"商品 {index}") for index in range(11)]
+    too_many_kinds = [OrderLine(product_id=product, quantity=1) for product in products]
+    too_many_pieces = [OrderLine(product_id=products[0], quantity=100)]
+
+    for lines in (too_many_kinds, too_many_pieces):
+        with pytest.raises(InvalidOrderError):
+            await orders.preview_order(lines)
+        with pytest.raises(InvalidOrderError):
+            await orders.place_order(users["alice"].id, lines)
+
+
+async def test_confirmed_order_is_refused_when_price_changed(
+    orders: Orders, users: dict[str, User], add_product: AddProduct, session_factory: SessionFactory
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机", price_cents=59900, stock=5)
+    lines = [OrderLine(product_id=earbuds, quantity=1)]
+    confirmed = await orders.preview_order(lines)
+    async with session_factory() as session:
+        await session.execute(update(Product).where(Product.id == earbuds).values(price_cents=64900))
+        await session.commit()
+
+    with pytest.raises(OrderPriceChangedError) as error:
+        async with session_factory() as session, session.begin():
+            await orders.place_order_in(session, users["alice"].id, lines, confirmed=confirmed)
+
+    assert str(error.value) == "「SoundPods 降噪耳机」的价格已从 599.00 元变为 649.00 元，请重新下单"
+    assert await stock_of(session_factory, earbuds) == 5
+    assert await order_count(session_factory) == 0
+
+
+async def test_confirmed_order_goes_through_when_only_stock_changed(
+    orders: Orders, users: dict[str, User], add_product: AddProduct, session_factory: SessionFactory
+) -> None:
+    earbuds = await add_product("SoundPods 降噪耳机", price_cents=59900, stock=10)
+    lines = [OrderLine(product_id=earbuds, quantity=1)]
+    confirmed = await orders.preview_order(lines)
+    async with session_factory() as session:
+        await session.execute(update(Product).where(Product.id == earbuds).values(stock=9))
+        await session.commit()
+
+    async with session_factory() as session, session.begin():
+        order = await orders.place_order_in(session, users["alice"].id, lines, confirmed=confirmed)
+
+    assert (order.total_cents, order.items[0].unit_price_cents) == (59900, 59900)
+    assert await stock_of(session_factory, earbuds) == 8
