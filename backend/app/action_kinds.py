@@ -10,6 +10,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, PositiveInt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.business.money import format_cents
+from app.business.orders import OrderLine, OrderPreview, Orders
 from app.business.returns import ReturnCancellationPreview, ReturnPreview, Returns
 from app.business.tickets import TicketPreview, Tickets
 from app.models import PendingAction
@@ -36,6 +38,12 @@ class ActionKindSpec:
     execute: Execute
 
 
+class OrderArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lines: list[OrderLine]
+
+
 class ReturnRequestArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -57,8 +65,17 @@ class TicketArguments(BaseModel):
     order_id: int | None = None
 
 
-def build_action_kinds(returns: Returns, tickets: Tickets) -> dict[str, ActionKindSpec]:
+def build_action_kinds(orders: Orders, returns: Returns, tickets: Tickets) -> dict[str, ActionKindSpec]:
     """创建全部操作类型的定义。执行函数用到的业务对象从这里传进去。"""
+
+    async def place_order(session: AsyncSession, action: PendingAction) -> dict[str, Any]:
+        # 锁住商品、按最新价格重新报价，和用户确认过的报价不一致就拒绝；库存不够也拒绝。
+        # 订单写在确认服务的事务里：订单、扣库存、操作状态一起提交，要么都生效，要么都不生效
+        arguments = OrderArguments.model_validate(action.arguments)
+        order = await orders.place_order_in(
+            session, action.user_id, arguments.lines, confirmed=OrderPreview.model_validate(action.preview)
+        )
+        return {"order_id": order.id}
 
     async def request_return(session: AsyncSession, action: PendingAction) -> dict[str, Any]:
         # 先锁住订单项、按最新数据重新计算，和用户确认过的预览不一致就拒绝
@@ -88,6 +105,14 @@ def build_action_kinds(returns: Returns, tickets: Tickets) -> dict[str, ActionKi
         return {"ticket_id": ticket.id}
 
     return {
+        "order": ActionKindSpec(
+            title="下单",
+            arguments=OrderArguments,
+            preview=OrderPreview,
+            describe=_describe_order,
+            done_text=lambda result: f"模拟订单已创建，订单号 {result['order_id']}（不含支付）",
+            execute=place_order,
+        ),
         "return_request": ActionKindSpec(
             title="退货申请",
             arguments=ReturnRequestArguments,
@@ -115,6 +140,14 @@ def build_action_kinds(returns: Returns, tickets: Tickets) -> dict[str, ActionKi
     }
 
 
+def _describe_order(preview: OrderPreview) -> str:
+    lines = "、".join(
+        f"「{line.product_name}」 × {line.quantity}（单价 {format_cents(line.unit_price_cents)} 元）"
+        for line in preview.lines
+    )
+    return f"{lines}，合计 {format_cents(preview.total_cents)} 元"
+
+
 def _describe_return_request(preview: ReturnPreview) -> str:
     return (
         f"订单 {preview.order_id} 的订单项 {preview.order_item_id}「{preview.product_name}」 × {preview.quantity}，"
@@ -132,8 +165,3 @@ def _describe_return_cancellation(preview: ReturnCancellationPreview) -> str:
 def _describe_ticket(preview: TicketPreview) -> str:
     order = f"订单 {preview.order_id}，" if preview.order_id is not None else ""
     return f"{order}问题摘要：{preview.summary}"
-
-
-def format_cents(cents: int) -> str:
-    """59900 → "599.00"。用整数运算，不经过小数。"""
-    return f"{cents // 100}.{cents % 100:02d}"

@@ -20,9 +20,19 @@ from app.config import Settings
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_RETRIES = 2
 
-# 离线模型的“规则”：消息里出现这些词，就调用对应的查询工具
-OFFLINE_KEYWORD_TOOLS = {"订单": "list_my_orders", "退货": "list_my_returns", "工单": "list_my_tickets"}
-OFFLINE_TOOL_LABELS = {"list_my_orders": "订单", "list_my_returns": "退货申请", "list_my_tickets": "工单"}
+# 离线模型的“规则”：消息里出现这些词，就用对应的参数调用查询工具（搜索商品时关键词为空，列出全部商品）
+OFFLINE_KEYWORD_TOOLS: dict[str, tuple[str, dict[str, Any]]] = {
+    "订单": ("list_my_orders", {}),
+    "退货": ("list_my_returns", {}),
+    "工单": ("list_my_tickets", {}),
+    "商品": ("search_products", {"keyword": ""}),
+}
+OFFLINE_TOOL_LABELS = {
+    "list_my_orders": "订单",
+    "list_my_returns": "退货申请",
+    "list_my_tickets": "工单",
+    "search_products": "商品",
+}
 # 列出工单、退货申请时，逐条说明处理状态：（状态 → 文字，说明字段，说明的叫法）
 OFFLINE_RECORD_STATUS = {
     "list_my_tickets": ({"open": "待处理", "closed": "已处理"}, "resolution", "处理结果"),
@@ -33,14 +43,18 @@ OFFLINE_RECORD_STATUS = {
     ),
 }
 # 演示发起待确认操作的规则（按顺序匹配）：
+# - “下单 商品 N”：预览购买商品 N 一件；带“M 件”时买 M 件
 # - “转人工”：预览转人工工单，摘要是用户原话；消息里有“订单 N”时关联订单 N
 # - “撤回退货 N”：预览撤回退货申请 N
 # - “退货 订单项 N”：预览退货（数量 1，原因是用户原话）
+OFFLINE_PLACE_ORDER_PATTERN = re.compile(r"下单\D*?商品\s*(\d+)")
+OFFLINE_QUANTITY_PATTERN = re.compile(r"(\d+)\s*件")
 OFFLINE_ORDER_PATTERN = re.compile(r"订单\s*(\d+)")
 OFFLINE_CANCEL_RETURN_PATTERN = re.compile(r"撤回退货\D*?(\d+)")
 OFFLINE_RETURN_PATTERN = re.compile(r"退货.*?订单项\s*(\d+)")
 # 预览工具的结果说明：（成功时，失败时的开头）
 OFFLINE_PROPOSAL_REPLIES = {
+    "preview_order": ("已生成下单预览，请在上方的卡片里确认", "无法下单"),
     "preview_ticket": ("已整理好转人工的问题，请在上方的卡片里确认", "无法转人工"),
     "preview_return_cancellation": ("已生成撤回退货的申请，请在上方的卡片里确认", "无法撤回"),
     "preview_return_request": ("已生成退货申请，请在上方的卡片里确认", "无法申请退货"),
@@ -62,10 +76,10 @@ def create_chat_model(settings: Settings) -> BaseChatModel:
 
 class OfflineChatModel(BaseChatModel):
     """离线聊天模型：不联网、不需要 Key，按固定规则回复，用来在没有真实模型时走通整个流程。
-    - 消息里有“转人工”时发起转人工预览；形如“撤回退货 3”时预览撤回退货申请 3；
-      形如“退货 订单项 3”时预览退货订单项 3（不会替用户在多件商品里做选择）；
-    - 消息里有“订单”“退货”“工单”且绑定了对应工具时，调用那个查询工具；
-    - 收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果；
+    - 形如“下单 商品 3”时预览购买商品 3（“2 件”表示买两件）；消息里有“转人工”时发起转人工预览；
+      形如“撤回退货 3”时预览撤回退货申请 3；形如“退货 订单项 3”时预览退货订单项 3（不会替用户在多件商品里做选择）；
+    - 消息里有“订单”“退货”“工单”“商品”且绑定了对应工具时，调用那个查询工具；
+    - 收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果，商品会列出编号、价格和库存；
     - 其他情况把用户的话按固定格式逐字返回。
     """
 
@@ -119,14 +133,18 @@ class OfflineChatModel(BaseChatModel):
             tool_name, arguments = proposal
             if tool_name in self.tool_names:
                 return _call(tool_name, arguments)
-        for keyword, tool_name in OFFLINE_KEYWORD_TOOLS.items():
+        for keyword, (tool_name, arguments) in OFFLINE_KEYWORD_TOOLS.items():
             if keyword in question and tool_name in self.tool_names:
-                return _call(tool_name, {})
+                return _call(tool_name, arguments)
         return AIMessage(f"（离线模式）收到你的消息：{question}")
 
 
 def _offline_proposal(question: str) -> tuple[str, dict[str, Any]] | None:
     """按演示规则判断要不要发起待确认操作，返回（预览工具名，参数）。"""
+    if match := OFFLINE_PLACE_ORDER_PATTERN.search(question):
+        quantity = OFFLINE_QUANTITY_PATTERN.search(question[match.end() :])
+        line = {"product_id": int(match.group(1)), "quantity": int(quantity.group(1)) if quantity else 1}
+        return "preview_order", {"lines": [line]}
     if "转人工" in question:
         arguments: dict[str, Any] = {"summary": question}
         if match := OFFLINE_ORDER_PATTERN.search(question):
@@ -166,6 +184,9 @@ def _summarize_tool_results(results: list[ToolMessage]) -> str:
             parts.append(f"查询{label}失败")
             continue
         records = _records_in(result)
+        if result.name == "search_products" and records:
+            parts.append(f"查到 {len(records)} 个商品：" + "；".join(_product_line(record) for record in records))
+            continue
         if (statuses := OFFLINE_RECORD_STATUS.get(result.name or "")) and records:
             parts.append(f"查到 {len(records)} 条{label}：" + "；".join(_with_status(r, *statuses) for r in records))
             continue
@@ -180,6 +201,12 @@ def _with_status(record: dict[str, Any], status_text: dict[str, str], detail_fie
     text = f"{record.get('id')} {status_text.get(status, status)}"
     detail = record.get(detail_field)
     return text + (f"（{detail_name}：{detail}）" if detail else "")
+
+
+def _product_line(product: dict[str, Any]) -> str:
+    """一个商品的编号、名称、价格和库存，比如“商品 1 SoundPods 降噪耳机 599.00 元，库存 5”。"""
+    cents = int(product.get("price_cents", 0))
+    return f"商品 {product.get('id')} {product.get('name')} {cents // 100}.{cents % 100:02d} 元，库存 {product.get('stock')}"
 
 
 def _records_in(result: ToolMessage) -> list[dict[str, Any]]:

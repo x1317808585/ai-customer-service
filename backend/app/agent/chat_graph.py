@@ -18,6 +18,8 @@ SYSTEM_PROMPT = (
     "工具返回的金额单位是分，回答时换算成元。工具报错时，如实告诉顾客没有查到或查询失败。\n"
     "以下操作都只能生成待确认的申请：页面上会出现确认卡片，顾客点击确认后才会执行，所以不要说已经完成。"
     "一次回复只能发起一项申请。\n"
+    "- 下单：先用 search_products 或 get_product 确认商品编号，再用 preview_order。"
+    "这是模拟订单，不含支付，下单成功后不要说已经付款或发货。\n"
     "- 申请退货：先查订单拿到要退商品的订单项编号（order_item_id，不是订单号），再用 preview_return_request。\n"
     "- 撤回退货申请：先用 list_my_returns 找到退货申请编号，再用 preview_return_cancellation。只有处理中的申请能撤回。\n"
     "- 转人工：顾客明确要求人工，或者遇到换货、质量争议、物流异常等工具处理不了的问题时，"
@@ -27,6 +29,7 @@ SYSTEM_PROMPT = (
 
 # 预览工具 → 它发起的待确认操作类型。预览成功后，页面上会出现确认卡片
 PROPOSAL_TOOLS = {
+    "preview_order": "order",
     "preview_return_request": "return_request",
     "preview_return_cancellation": "return_cancellation",
     "preview_ticket": "ticket",

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.business.catalog import Catalog, ProductView
 from app.business.errors import BusinessError
-from app.business.orders import Orders, OrderView
+from app.business.orders import MAX_LINE_QUANTITY, MAX_ORDER_LINES, OrderLine, OrderPreview, Orders, OrderView
 from app.business.returns import (
     ReturnCancellationPreview,
     ReturnEligibility,
@@ -84,6 +84,23 @@ def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncS
     async def get_order(order_id: Annotated[int, Field(description="订单号")]) -> OrderView:
         """查看当前顾客的一个订单：状态、签收时间、商品明细和金额（分）。"""
         return await orders.get_order(current_user_id(), order_id)
+
+    @mcp.tool(annotations=READ_ONLY)
+    @hide_system_errors
+    async def preview_order(
+        lines: Annotated[
+            list[OrderLine],
+            Field(
+                description="要买的商品（product_id）和件数（quantity），每种商品一行，"
+                f"最多 {MAX_ORDER_LINES} 种，每种最多 {MAX_LINE_QUANTITY} 件"
+            ),
+        ],
+    ) -> OrderPreview:
+        """按正式下单的规则报价，返回将要创建的订单：每种商品的数量、单价和总额（单位分）。
+
+        只生成预览，不会下单。顾客在页面上确认后，系统才会创建模拟订单（不含支付）。
+        """
+        return await orders.preview_order(lines)
 
     @mcp.tool(annotations=READ_ONLY)
     @hide_system_errors

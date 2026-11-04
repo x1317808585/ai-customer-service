@@ -24,6 +24,7 @@ READ_TOOLS = {
     "get_product",
     "list_my_orders",
     "get_order",
+    "preview_order",
     "list_my_returns",
     "list_my_tickets",
     "check_return_eligibility",
@@ -167,6 +168,7 @@ async def test_read_tools_do_not_change_any_data(
         item_id = order["items"][0]["id"]
         calls = {
             "get_product": {"product_id": products[0]["id"]},
+            "preview_order": {"lines": [{"product_id": products[0]["id"], "quantity": 1}]},
             "list_my_orders": {},
             "list_my_returns": {},
             "list_my_tickets": {},

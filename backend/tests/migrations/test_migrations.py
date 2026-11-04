@@ -223,7 +223,7 @@ STAFF_RESOLUTION_DATA = {
 async def test_staff_resolution_downgrade_is_refused_instead_of_destroying_data(
     engine: AsyncEngine, data: tuple[str, ...]
 ) -> None:
-    run_alembic("upgrade", "head")
+    run_alembic("upgrade", STAFF_RESOLUTION)
     await execute(engine, "INSERT INTO users (username, role) VALUES ('alice', 'customer'), ('admin', 'admin')", *data)
 
     errors = run_alembic("downgrade", ACTION_KINDS, expect_failure=True)

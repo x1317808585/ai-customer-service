@@ -10,7 +10,7 @@ MessageRole = Literal["user", "assistant"]
 OrderStatus = Literal["placed", "shipped", "delivered", "cancelled"]
 ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
 TicketStatus = Literal["open", "closed"]
-ActionKind = Literal["return_request", "return_cancellation", "ticket"]
+ActionKind = Literal["order", "return_request", "return_cancellation", "ticket"]
 ActionStatus = Literal["pending", "executed", "cancelled", "failed"]
 
 CreatedAt = Annotated[
@@ -187,7 +187,7 @@ class PendingAction(Base):
     __tablename__ = "pending_actions"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('return_request', 'return_cancellation', 'ticket')", name="ck_pending_actions_kind"
+            "kind IN ('order', 'return_request', 'return_cancellation', 'ticket')", name="ck_pending_actions_kind"
         ),
         CheckConstraint(
             "status IN ('pending', 'executed', 'cancelled', 'failed')", name="ck_pending_actions_status"

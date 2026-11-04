@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.action_kinds import build_action_kinds
 from app.actions import ActionService
 from app.agent.reply_agent import ReplyAgent
+from app.business.orders import Orders
 from app.business.returns import Returns
 from app.business.tickets import Tickets
 from app.conversations import ConversationService
@@ -19,7 +20,8 @@ async def test_closing_the_reply_stream_early_closes_the_agent_and_frees_the_con
     started = asyncio.Event()
     toolbox = FakeToolbox([blocking_tool("list_my_orders", started)])
     model = ScriptedChatModel(respond=always(calls_tools(("list_my_orders", {}))))
-    actions = ActionService(session_factory, build_action_kinds(Returns(session_factory), Tickets(session_factory)))
+    kinds = build_action_kinds(Orders(session_factory), Returns(session_factory), Tickets(session_factory))
+    actions = ActionService(session_factory, kinds)
     service = ConversationService(session_factory, ReplyAgent(model, toolbox), actions)
     alice_id = users["alice"].id
     conversation = await service.create_conversation(alice_id)

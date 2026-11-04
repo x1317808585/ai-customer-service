@@ -17,6 +17,7 @@ ALLOWED_TOOLS = frozenset(
         "get_product",
         "list_my_orders",
         "get_order",
+        "preview_order",
         "list_my_returns",
         "list_my_tickets",
         "check_return_eligibility",

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -17,6 +18,7 @@ from app.actions import (
     ActionService,
     UnknownActionKindError,
 )
+from app.business.orders import OrderLine, Orders
 from app.business.returns import RETURN_WINDOW, ReturnPreviewChangedError, Returns
 from app.business.tickets import Tickets
 from app.models import Conversation, Message, Order, PendingAction, Product, ReturnRequest, Ticket, User
@@ -50,7 +52,8 @@ def returns(session_factory: SessionFactory, clock: Clock) -> Returns:
 
 def action_service(session_factory: SessionFactory, returns: Returns, clock: Clock) -> ActionService:
     """用给定的 Returns 组装确认服务。测试可以换成会出错的 Returns。"""
-    return ActionService(session_factory, build_action_kinds(returns, Tickets(session_factory)), clock=clock)
+    kinds = build_action_kinds(Orders(session_factory), returns, Tickets(session_factory))
+    return ActionService(session_factory, kinds, clock=clock)
 
 
 @pytest.fixture
@@ -548,3 +551,91 @@ async def test_description_for_the_model_depends_on_the_kind(
     action = PendingAction(kind=kind, preview=previews[kind], status="executed", result=result)
 
     assert actions.describe(action) == expected
+
+
+# ---------- 下单 ----------
+
+
+@pytest.fixture
+async def propose_order(
+    session_factory: SessionFactory, propose: Propose, users: dict[str, User], add_product: AddProduct
+) -> Callable[[], Awaitable[tuple[int, int]]]:
+    """alice 发起购买一件 SoundPods 降噪耳机（库存 5）的下单提议，返回（操作 id，商品 id）。"""
+
+    async def _propose_order() -> tuple[int, int]:
+        product = await add_product("SoundPods 降噪耳机", price_cents=59900, stock=5)
+        lines = [OrderLine(product_id=product, quantity=1)]
+        preview = await Orders(session_factory).preview_order(lines)
+        arguments = {"lines": [line.model_dump() for line in lines]}
+        action = await propose(users["alice"], "order", arguments, preview.model_dump())
+        return action.id, product
+
+    return _propose_order
+
+
+async def order_facts(session_factory: SessionFactory, product_id: int) -> tuple[int, int]:
+    """（订单数，商品库存）"""
+    async with session_factory() as session:
+        orders = await session.scalar(select(func.count()).select_from(Order))
+        stock = await session.scalar(select(Product.stock).where(Product.id == product_id))
+        return orders, stock
+
+
+async def test_concurrent_confirms_of_one_order_card_create_one_order(
+    actions: ActionService,
+    propose_order: Callable[[], Awaitable[tuple[int, int]]],
+    users: dict[str, User],
+    session_factory: SessionFactory,
+) -> None:
+    action_id, product = await propose_order()
+
+    # 先锁住这条操作，让两个确认请求堵在同一起跑线上再一起放行
+    async with session_factory() as blocker, blocker.begin():
+        await blocker.execute(select(PendingAction).where(PendingAction.id == action_id).with_for_update())
+        attempts = [asyncio.create_task(actions.confirm(users["alice"].id, action_id)) for _ in range(2)]
+        await asyncio.sleep(0.5)
+    first, second = await asyncio.gather(*attempts)
+
+    assert first == second
+    assert first.status == "executed" and first.result is not None
+    assert await order_facts(session_factory, product) == (1, 4)
+
+
+async def test_failure_after_the_order_is_written_rolls_back_order_and_stock(
+    actions: ActionService,
+    propose_order: Callable[[], Awaitable[tuple[int, int]]],
+    users: dict[str, User],
+    clock: Clock,
+    session_factory: SessionFactory,
+) -> None:
+    """订单已经写入、确认事务还没提交时出故障：订单和库存都回滚，操作仍待确认，重试只生成一张订单。"""
+    action_id, product = await propose_order()
+    kinds = build_action_kinds(Orders(session_factory), Returns(session_factory), Tickets(session_factory))
+    order_written = False
+
+    async def place_order_then_mark(session: AsyncSession, action: PendingAction) -> dict[str, Any]:
+        nonlocal order_written
+        result = await kinds["order"].execute(session, action)
+        order_written = True
+        return result
+
+    def failing_clock() -> datetime:
+        # 确认服务在订单写入后、提交前用时钟记录处理时间：在这里模拟故障
+        if order_written:
+            raise ConnectionResetError("数据库连接断开")
+        return clock()
+
+    crashing = ActionService(
+        session_factory,
+        {**kinds, "order": dataclasses.replace(kinds["order"], execute=place_order_then_mark)},
+        clock=failing_clock,
+    )
+
+    with pytest.raises(ConnectionResetError):
+        await crashing.confirm(users["alice"].id, action_id)
+
+    assert order_written
+    assert await order_facts(session_factory, product) == (0, 5)
+    assert (await actions.get(users["alice"].id, action_id)).status == "pending"
+    assert (await actions.confirm(users["alice"].id, action_id)).status == "executed"
+    assert await order_facts(session_factory, product) == (1, 4)

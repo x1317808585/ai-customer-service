@@ -136,13 +136,17 @@ async def test_offline_model_previews_a_return_only_for_an_explicit_order_item()
         ("我要转人工", "preview_ticket", {"summary": "我要转人工"}),
         ("撤回退货 3", "preview_return_cancellation", {"return_id": 3}),
         ("撤回退货申请 12", "preview_return_cancellation", {"return_id": 12}),
+        ("下单商品 3", "preview_order", {"lines": [{"product_id": 3, "quantity": 1}]}),
+        ("下单 商品 3，要 2 件", "preview_order", {"lines": [{"product_id": 3, "quantity": 2}]}),
     ],
-    ids=["ticket-with-order", "ticket", "cancel-return", "cancel-return-long"],
+    ids=["ticket-with-order", "ticket", "cancel-return", "cancel-return-long", "order", "order-quantity"],
 )
 async def test_offline_model_proposes_tickets_and_return_cancellations(
     question: str, tool_name: str, arguments: dict[str, object]
 ) -> None:
-    model = offline_model("preview_ticket", "preview_return_cancellation", "preview_return_request", "list_my_returns")
+    model = offline_model(
+        "preview_order", "preview_ticket", "preview_return_cancellation", "preview_return_request", "list_my_returns"
+    )
 
     reply = await model.ainvoke([HumanMessage(question)])
 
