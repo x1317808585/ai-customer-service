@@ -5,6 +5,7 @@
  */
 
 import type { ActionView } from "@/lib/actions";
+import type { Citation } from "@/lib/citations";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
 
@@ -22,6 +23,8 @@ export type ChatMessage = {
   created_at: string;
   /** 这条消息是确认卡片时，对应操作的当前状态 */
   action: ActionView | null;
+  /** 助手回复引用的知识库原文快照，按在正文里第一次出现的顺序。没有引用时为空（不提供时也按空处理） */
+  citations?: Citation[];
 };
 
 /** 后端返回了非 2xx 状态码。data 是响应内容（比如 409 时附带的操作当前状态）。 */

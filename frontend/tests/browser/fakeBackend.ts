@@ -13,6 +13,7 @@ import type { Page, Request, Route } from "@playwright/test";
 import type { ActionView } from "@/lib/actions";
 import type { StaffReturn, StaffTicket } from "@/lib/admin/api";
 import type { ChatMessage, User } from "@/lib/api";
+import type { Citation } from "@/lib/citations";
 import type { Conversation } from "@/lib/customer/api";
 
 /** 前端的后端地址在测试里指向本站的这个路径（见 playwright.config.ts）。 */
@@ -96,11 +97,11 @@ export function orderAction(changes: Partial<ActionView> & { id: number }): Acti
   } as ActionView;
 }
 
-/** 助手回复脚本的一步。card 表示助手提议了一项待确认操作。 */
+/** 助手回复脚本的一步。card 表示助手提议了一项待确认操作；done 可以带上回复引用的知识库原文。 */
 export type ReplyStep =
   | { type: "delta"; text: string }
   | { type: "card"; action: ActionView }
-  | { type: "done" }
+  | { type: "done"; citations?: Citation[] }
   | { type: "error"; detail: string };
 
 type Reply = { status: number; body?: unknown; sse?: string };
@@ -282,8 +283,9 @@ export class FakeBackend {
         const card = save({ role: "assistant", content: "", action: step.action });
         sse += event("action.proposed", { message_id: card.id, action: step.action });
       } else if (step.type === "done") {
-        const reply = save({ role: "assistant", content: text, action: null });
-        sse += event("message.done", { message_id: reply.id });
+        const citations = step.citations ?? [];
+        const reply = save({ role: "assistant", content: text, action: null, citations });
+        sse += event("message.done", { message_id: reply.id, citations });
       } else {
         sse += event("error", { detail: step.detail });
       }

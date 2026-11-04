@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isActionView, type ActionView } from "@/lib/actions";
 import { ApiError, describeError, isUnauthorized, type ChatMessage } from "@/lib/api";
+import type { Citation } from "@/lib/citations";
 import {
   cancelAction,
   confirmAction,
@@ -29,6 +30,8 @@ export type DisplayMessage = {
   tools: ToolProgress[];
   /** 这条消息是确认卡片时，对应操作的当前状态 */
   action: ActionView | null;
+  /** 回复引用的知识库原文。回复完成（message.done）时才有，生成过程中为空 */
+  citations: Citation[];
   /** 回复中途结束、又读不到会话记录时，留在页面上的半截回复。它没有保存在服务器上。 */
   unfinished?: true;
 };
@@ -175,8 +178,8 @@ export function useChat() {
       const createdAt = new Date(now).toISOString();
       setMessages((previous) => [
         ...previous,
-        { key: questionKey, role: "user", content: text, createdAt, streaming: false, tools: [], action: null },
-        { key: replyKey, role: "assistant", content: "", createdAt, streaming: true, tools: [], action: null },
+        { key: questionKey, role: "user", content: text, createdAt, streaming: false, tools: [], action: null, citations: [] },
+        { key: replyKey, role: "assistant", content: "", createdAt, streaming: true, tools: [], action: null, citations: [] },
       ]);
       const updateReply = (change: (message: DisplayMessage) => DisplayMessage) =>
         setMessages((previous) =>
@@ -199,7 +202,8 @@ export function useChat() {
             void refreshConversations();
           } else if (event.event === "message.done") {
             done = true;
-            updateReply((message) => ({ ...message, streaming: false }));
+            const { citations } = JSON.parse(event.data) as { citations?: Citation[] };
+            updateReply((message) => ({ ...message, streaming: false, citations: citations ?? [] }));
           } else if (event.event === "error") {
             failure = { detail: (JSON.parse(event.data) as { detail?: string }).detail ?? null };
           } else if (event.event === "action.proposed") {
@@ -216,6 +220,7 @@ export function useChat() {
               streaming: false,
               tools: [],
               action,
+              citations: [],
             };
             setMessages((previous) => {
               const replyIndex = previous.findIndex((message) => message.key === replyKey);
@@ -385,5 +390,6 @@ function toDisplayMessage(message: ChatMessage): DisplayMessage {
     streaming: false,
     tools: [],
     action: message.action,
+    citations: message.citations ?? [],
   };
 }

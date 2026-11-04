@@ -252,3 +252,37 @@ test("下单卡片显示每种商品的数量、单价和合计，确认后显�
   await expect(orderCard.getByRole("button")).toHaveCount(0);
   expect(backend.count("POST", "/api/actions/8/confirm")).toBe(1);
 });
+
+test("回复完成后已核对的出处显示为编号，展开参考资料能看到出处和原文，刷新后不变", async ({ page }) => {
+  const citation = {
+    source_id: "return-policy#退货期限",
+    document_title: "退货政策",
+    section: "退货期限",
+    content: "签收后 7 天内可以申请退货。",
+  };
+  await openChat(page, (backend) => {
+    backend.addConversation(CONVERSATION);
+    backend.replies.push([
+      { type: "delta", text: `（离线模式）根据《退货政策》“退货期限”：「${citation.content}」[来源：${citation.source_id}]。` },
+      { type: "done", citations: [citation] },
+    ]);
+  });
+
+  await send(page, "退货政策是什么？");
+  await expectCitedReply(page);
+
+  await page.reload();
+  await expectCitedReply(page);
+});
+
+async function expectCitedReply(page: Page) {
+  const reply = messageList(page).getByRole("listitem").nth(1);
+  await expect(reply).toContainText("「签收后 7 天内可以申请退货。」[1]");
+  await expect(reply).not.toContainText("[来源：");
+
+  await reply.getByText("参考资料（1）").click();
+  const sources = reply.getByRole("list", { name: "参考资料" });
+  await expect(sources).toBeVisible();
+  await expect(sources).toContainText("[1] 《退货政策》· 退货期限");
+  await expect(sources).toContainText("签收后 7 天内可以申请退货。");
+}

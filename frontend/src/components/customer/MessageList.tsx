@@ -2,10 +2,12 @@ import { useState } from "react";
 import { ArrowDown, User } from "lucide-react";
 
 import { ActionCard } from "@/components/ActionCard";
+import { CitationList } from "@/components/CitationList";
 import { HeyiMark } from "@/components/HeyiMark";
 import { Button } from "@/components/ui/button";
 import type { DisplayMessage } from "@/hooks/customer/useChat";
 import { useStickToBottom } from "@/hooks/customer/useStickToBottom";
+import { splitCitations } from "@/lib/citations";
 import { formatMessageTime } from "@/lib/customer/display";
 import { describeToolProgress } from "@/lib/customer/replyDraft";
 
@@ -142,9 +144,18 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
           ))}
         </ul>
       )}
-      {message.content}
+      {splitCitations(message.content, message.citations).map((part, index) =>
+        part.kind === "text" ? (
+          part.text
+        ) : (
+          <sup key={index} className="mx-0.5 text-xs font-medium text-primary">
+            [{part.number}]
+          </sup>
+        ),
+      )}
       {message.streaming && <span className="ml-0.5 animate-pulse motion-reduce:animate-none">▍</span>}
       {message.unfinished && <p className="mt-1 text-xs text-muted-foreground">回复未完成，未保存</p>}
+      {message.citations.length > 0 && <CitationList citations={message.citations} />}
     </div>
   );
 }
