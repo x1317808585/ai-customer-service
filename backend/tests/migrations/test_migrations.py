@@ -24,6 +24,8 @@ ACTION_KINDS = "f7d42726c26d"  # 10B：撤回退货、转人工、工单来源�
 STAFF_RESOLUTION = "3c5a91d0b7e2"  # 11A：工单和退货的处理信息
 KNOWLEDGE_CHUNKS = "13a4e21a91ea"  # 12A：知识库
 CITATIONS = "8acbab16965e"  # 12B：回复引用的原文快照
+SUMMARIES = "70c89884774b"  # 13A：会话摘要
+USER_MEMORIES = "874f6907f7f9"  # 13B：长期偏好
 
 
 def run_alembic(*args: str, expect_failure: bool = False) -> str:
@@ -251,3 +253,20 @@ async def test_citations_downgrade_is_refused_instead_of_destroying_data(engine:
 
     assert "不能降级" in errors
     assert await current_version(engine) == CITATIONS
+
+
+# ---------- 13B：有偏好时拒绝降级 ----------
+
+
+async def test_user_memories_downgrade_is_refused_instead_of_destroying_data(engine: AsyncEngine) -> None:
+    run_alembic("upgrade", USER_MEMORIES)
+    await execute(
+        engine,
+        "INSERT INTO users (username, role) VALUES ('alice', 'customer')",
+        "INSERT INTO user_memories (user_id, field, value) VALUES (1, 'earphone_fit', '入耳式')",
+    )
+
+    errors = run_alembic("downgrade", SUMMARIES, expect_failure=True)
+
+    assert "不能降级" in errors
+    assert await current_version(engine) == USER_MEMORIES

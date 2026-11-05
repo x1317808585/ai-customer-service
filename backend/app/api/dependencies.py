@@ -10,6 +10,7 @@ from app.config import Settings
 from app.conversations import ConversationService
 from app.database import SessionFactoryDep
 from app.models import User
+from app.preferences import Preferences
 
 ACCESS_TOKEN_COOKIE = "access_token"
 
@@ -68,9 +69,14 @@ def get_returns(request: Request) -> Returns:
     return request.app.state.returns
 
 
+def get_preferences(session_factory: SessionFactoryDep) -> Preferences:
+    return Preferences(session_factory)
+
+
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
 AdminDep = Annotated[User, Depends(require_admin)]
 ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation_service)]
 ActionServiceDep = Annotated[ActionService, Depends(get_action_service)]
 TicketsDep = Annotated[Tickets, Depends(get_tickets)]
 ReturnsDep = Annotated[Returns, Depends(get_returns)]
+PreferencesDep = Annotated[Preferences, Depends(get_preferences)]

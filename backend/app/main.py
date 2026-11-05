@@ -19,6 +19,7 @@ from app.api.admin import router as admin_router
 from app.api.admin.errors import StaleRecordError
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
+from app.api.memories import router as memories_router
 from app.api.trusted_origin import TrustedOriginMiddleware
 from app.business.orders import Orders
 from app.business.returns import Returns
@@ -74,6 +75,7 @@ def create_app(
     app.include_router(conversations_router)
     app.include_router(actions_router)
     app.include_router(admin_router)
+    app.include_router(memories_router)
 
     @app.exception_handler(ConversationNotFoundError)
     async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:

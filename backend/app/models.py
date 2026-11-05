@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, true
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, true
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -80,6 +80,27 @@ class ConversationSummary(Base):
     # 被摘要覆盖的确认卡片对应的操作编号。只记编号，每轮按编号重新读取操作的最新状态
     action_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer))
     created_at: Mapped[CreatedAt]
+
+
+class UserMemory(Base):
+    """顾客的一条长期偏好（固定的几个字段之一）。每个用户的每个字段只有一条，改口时覆盖。"""
+
+    __tablename__ = "user_memories"
+    __table_args__ = (
+        UniqueConstraint("user_id", "field", name="uq_user_memories_user_field"),
+        CheckConstraint(
+            "field IN ('earphone_fit', 'keyboard_switch', 'reply_detail')", name="ck_user_memories_field"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    field: Mapped[str] = mapped_column(String(32))
+    value: Mapped[str] = mapped_column(String(32))
+    # 最近一次说出这个偏好的消息。消息所在的会话删除后置空，偏好保留
+    source_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"))
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[CreatedAt]
 
 
 class Product(Base):

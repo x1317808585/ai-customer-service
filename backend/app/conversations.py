@@ -15,6 +15,7 @@ from app.agent.reply_agent import ReplyAgent, ReplyFailedError
 from app.citations import Citation, cited
 from app.memory import ConversationMemory, ConversationNotFoundError
 from app.models import Conversation, Message, MessageRole
+from app.preferences import Preferences
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class ConversationService:
         self._reply_agent = reply_agent
         self._actions = actions
         self._memory = memory or ConversationMemory(session_factory, actions)
+        self._preferences = Preferences(session_factory)
         self._replying_conversation_ids: set[int] = set()
 
     async def create_conversation(self, user_id: int) -> Conversation:
@@ -145,6 +147,9 @@ class ConversationService:
                     conversation.title = content[:TITLE_MAX_LENGTH]
                 user_message = Message(conversation_id=conversation_id, role="user", content=content)
                 session.add(user_message)
+                await session.flush()  # 拿到消息 id，记为偏好的来源
+                # 顾客在这条消息里明确说了偏好的话，和消息一起保存；这一轮的上下文就能用上
+                await self._preferences.remember_in(session, user_id, user_message.id, content)
                 await session.commit()
             yield ReplyEvent("message.accepted", {"message_id": user_message.id})
 

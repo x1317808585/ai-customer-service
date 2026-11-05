@@ -1,7 +1,7 @@
 """会话记忆：每一轮回复前，组装交给模型的上下文。
 
 对外只有 ConversationMemory.context_for 一个入口。它保证：
-- 只读取当前用户自己的会话；
+- 只读取当前用户自己的会话和长期偏好；
 - 返回的上下文不超过预算，并且一定完整包含当前这个问题；
 - 确认卡片一律按操作的最新状态描述（包括已经被摘要覆盖的卡片）。
 
@@ -25,6 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from app.actions import ActionService
 from app.models import Conversation, ConversationSummary, Message, MessageRole, PendingAction
+from app.preferences import Preferences, preferences_max_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def estimate_tokens(text: str) -> int:
 class ContextLimits:
     """上下文的上限（都不含系统提示词和本轮的工具调用）。"""
 
-    budget_tokens: int = 8000  # 摘要 + 历史原文 + 当前问题，合计不超过这么多
+    budget_tokens: int = 8000  # 长期偏好 + 摘要 + 历史原文 + 当前问题，合计不超过这么多
     summarize_at_tokens: int = 6000  # 摘要之后的原文（连同已有摘要）超过这么多就重新摘要
     keep_rounds: int = 10  # 最多保留最近几轮原文（含当前这一轮）
     max_question_tokens: int = 4000  # 一条用户消息最多多少 Token（与接口的 MAX_MESSAGE_LENGTH 一致）
@@ -61,20 +62,21 @@ class ContextLimits:
     summary_max_actions: int = 10  # 摘要里最多记几张卡片
 
     def __post_init__(self) -> None:
-        # 当前问题必须能和摘要一起放进去，否则“不超预算”和“完整保留当前问题”无法同时成立
+        # 当前问题必须能和长期偏好、摘要一起放进去，否则“不超预算”和“完整保留当前问题”无法同时成立
         longest_question = self.max_question_tokens + MESSAGE_OVERHEAD_TOKENS
-        if self.budget_tokens < longest_question + self.summary_reserve:
-            raise ValueError("budget_tokens 放不下最长的问题加上摘要")
-        if self.summarize_at_tokens - self.summary_reserve < longest_question:
+        if self.budget_tokens < longest_question + self.reserved_tokens:
+            raise ValueError("budget_tokens 放不下最长的问题加上长期偏好和摘要")
+        if self.summarize_at_tokens - self.reserved_tokens < longest_question:
             raise ValueError("summarize_at_tokens 太小：摘要之后放不下最长的问题")
         if self.summarize_at_tokens > self.budget_tokens:
             raise ValueError("summarize_at_tokens 不能超过 budget_tokens")
 
     @property
-    def summary_reserve(self) -> int:
-        """摘要部分（正文、卡片状态、固定说明）最多占用的 Token。"""
+    def reserved_tokens(self) -> int:
+        """长期偏好块和摘要部分（正文、卡片状态、固定说明）最多占用的 Token。"""
+        preferences = preferences_max_tokens() + MESSAGE_OVERHEAD_TOKENS
         frame = estimate_tokens(SUMMARY_FRAME + ACTIONS_FRAME) + MESSAGE_OVERHEAD_TOKENS
-        return frame + self.summary_max_tokens + self.summary_max_actions * (ACTION_LINE_MAX_CHARS + 1)
+        return preferences + frame + self.summary_max_tokens + self.summary_max_actions * (ACTION_LINE_MAX_CHARS + 1)
 
 
 class Summarizer(Protocol):
@@ -102,9 +104,10 @@ class ConversationMemory:
         self._actions = actions
         self._summarizer = summarizer or OfflineSummarizer()
         self._limits = limits or ContextLimits()
+        self._preferences = Preferences(session_factory)
 
     async def context_for(self, user_id: int, conversation_id: int) -> list[BaseMessage]:
-        """交给模型的上下文：（摘要）+ 最近几轮原文，最后一条是当前问题。
+        """交给模型的上下文：（长期偏好）+（摘要）+ 最近几轮原文，最后一条是当前问题。
 
         调用前当前问题必须已经保存。会话不属于这个用户时抛出 ConversationNotFoundError。
         """
@@ -123,12 +126,15 @@ class ConversationMemory:
             # 摘要没保存成功时，游标不动，下面按预算从全部原文里取最近的轮次
 
         async with self._session_factory() as session:
+            preferences = await self._preferences.context_text(session, user_id)
             summary_message = await self._summary_message(session, summary)
-        used = _tokens([summary_message]) if summary_message else 0
-        recent = self._fit(rounds, self._limits.budget_tokens - used)
-        return ([summary_message] if summary_message else []) + [
-            self._to_langchain(message) for round_ in recent for message in round_
-        ]
+        fixed: list[BaseMessage] = []
+        if preferences:
+            fixed.append(SystemMessage(preferences))
+        if summary_message:
+            fixed.append(summary_message)
+        recent = self._fit(rounds, self._limits.budget_tokens - _tokens(fixed))
+        return fixed + [self._to_langchain(message) for round_ in recent for message in round_]
 
     def _needs_summary(self, summary: _Summary | None, rounds: list[list[Message]]) -> bool:
         if len(rounds) <= 1:
@@ -137,8 +143,8 @@ class ConversationMemory:
         return len(rounds) > self._limits.keep_rounds or size > self._limits.summarize_at_tokens
 
     def _rounds_to_keep(self, rounds: list[list[Message]]) -> int:
-        """重新摘要后保留几轮原文：最近的若干轮，不超过轮数，也不超过“阈值减去摘要占用”。至少保留当前这一轮。"""
-        room = self._limits.summarize_at_tokens - self._limits.summary_reserve
+        """重新摘要后保留几轮原文：最近的若干轮，不超过轮数，也不超过“阈值减去长期偏好和摘要的占用”。至少保留当前这一轮。"""
+        room = self._limits.summarize_at_tokens - self._limits.reserved_tokens
         keep, used = 0, 0
         for round_ in reversed(rounds):
             used += self._round_tokens(round_)
