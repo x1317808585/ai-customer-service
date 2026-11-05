@@ -184,14 +184,20 @@ class ActionService:
     def describe(self, action: PendingAction) -> str:
         """给模型看的一句话，按当前状态生成。下一轮对话时模型据此回答“提交成功了吗”。"""
         spec = self._spec(action.kind)
+        preview = spec.describe(spec.preview.model_validate(action.preview))
+        return f"（{spec.title}：{preview}。状态：{self._state_text(action)}）"
+
+    def brief(self, action: PendingAction) -> str:
+        """只说操作类型、编号和当前状态，不含预览内容，用在会话摘要里，比如“（下单 #12。状态：模拟订单已创建……）”。"""
+        return f"（{self._spec(action.kind).title} #{action.id}。状态：{self._state_text(action)}）"
+
+    def _state_text(self, action: PendingAction) -> str:
         state = self._state_of(action)
         if state == "executed" and action.result:
-            detail = spec.done_text(action.result)
-        elif state == "failed" and action.error:
-            detail = f"{_STATE_TEXT['failed']}：{action.error}"
-        else:
-            detail = _STATE_TEXT[state]
-        return f"（{spec.title}：{spec.describe(spec.preview.model_validate(action.preview))}。状态：{detail}）"
+            return self._spec(action.kind).done_text(action.result)
+        if state == "failed" and action.error:
+            return f"{_STATE_TEXT['failed']}：{action.error}"
+        return _STATE_TEXT[state]
 
     def _spec(self, kind: str) -> ActionKindSpec:
         spec = self._kinds.get(kind)

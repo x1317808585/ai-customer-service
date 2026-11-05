@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, func, true
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func, true
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 UserRole = Literal["customer", "admin"]
@@ -65,6 +65,21 @@ class Message(Base):
     action: Mapped["PendingAction | None"] = relationship(
         foreign_keys="PendingAction.card_message_id", viewonly=True, lazy="raise"
     )
+
+
+class ConversationSummary(Base):
+    """会话较早部分的摘要。每次重新摘要都新增一条，读取时只用最新的一条。"""
+
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    # 摘要覆盖到这条消息为止（含）。之后的消息按原文交给模型
+    covers_through_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+    content: Mapped[str] = mapped_column(Text)
+    # 被摘要覆盖的确认卡片对应的操作编号。只记编号，每轮按编号重新读取操作的最新状态
+    action_ids: Mapped[list[int]] = mapped_column(ARRAY(Integer))
+    created_at: Mapped[CreatedAt]
 
 
 class Product(Base):

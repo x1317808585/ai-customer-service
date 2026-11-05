@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -14,13 +13,13 @@ from app.actions import ActionService, ActionView
 from app.agent.events import ActionProposed, DraftDiscarded, KnowledgeFound, TextDelta, ToolStatus
 from app.agent.reply_agent import ReplyAgent, ReplyFailedError
 from app.citations import Citation, cited
+from app.memory import ConversationMemory, ConversationNotFoundError
 from app.models import Conversation, Message, MessageRole
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "新会话"
 TITLE_MAX_LENGTH = 20
-HISTORY_MESSAGE_LIMIT = 20
 
 ReplyEventType = Literal[
     "message.accepted",
@@ -53,10 +52,6 @@ class HistoryMessage:
     citations: list[Citation]
 
 
-class ConversationNotFoundError(Exception):
-    """会话不存在，或者不属于当前用户。两种情况对外表现一致，不泄露别人的会话是否存在。"""
-
-
 class ConversationBusyError(Exception):
     """这个会话的上一条回复还在生成中。"""
 
@@ -69,10 +64,13 @@ class ConversationService:
         session_factory: async_sessionmaker[AsyncSession],
         reply_agent: ReplyAgent,
         actions: ActionService,
+        memory: ConversationMemory | None = None,
     ) -> None:
+        """memory 只在测试里传（比如换一个会失败的摘要器）；不传时用默认的上限和离线摘要器。"""
         self._session_factory = session_factory
         self._reply_agent = reply_agent
         self._actions = actions
+        self._memory = memory or ConversationMemory(session_factory, actions)
         self._replying_conversation_ids: set[int] = set()
 
     async def create_conversation(self, user_id: int) -> Conversation:
@@ -148,10 +146,11 @@ class ConversationService:
                 user_message = Message(conversation_id=conversation_id, role="user", content=content)
                 session.add(user_message)
                 await session.commit()
-                history = await self._load_recent_history(session, conversation_id)
             yield ReplyEvent("message.accepted", {"message_id": user_message.id})
 
             try:
+                # 用户消息已经保存并告诉了前端，之后的任何失败都以 error 事件结束这一轮
+                history = await self._memory.context_for(user_id, conversation_id)
                 # 只保存最终回答：被撤回的草稿（模型调用工具前说的话）不算。
                 # aclosing：这里提前结束（比如用户点了停止）时，主动关闭 Agent，让它马上断开 MCP 连接。
                 reply_text = ""
@@ -216,25 +215,6 @@ class ConversationService:
                 "message.done",
                 {"message_id": reply.id, "citations": [citation.model_dump() for citation in citations]},
             )
-
-    async def _load_recent_history(self, session: AsyncSession, conversation_id: int) -> list[BaseMessage]:
-        """交给模型的最近历史。确认卡片按操作的当前状态描述，模型据此回答“提交成功了吗”。"""
-        recent = await session.scalars(
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-            .options(selectinload(Message.action))
-            .order_by(Message.id.desc())
-            .limit(HISTORY_MESSAGE_LIMIT)
-        )
-        history: list[BaseMessage] = []
-        for message in reversed(list(recent)):
-            if message.action is not None:
-                history.append(AIMessage(self._actions.describe(message.action)))
-            elif message.role == "user":
-                history.append(HumanMessage(message.content))
-            else:
-                history.append(AIMessage(message.content))
-        return history
 
     @contextmanager
     def _replying_to(self, conversation_id: int) -> Iterator[None]:
