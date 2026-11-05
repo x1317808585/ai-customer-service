@@ -34,13 +34,13 @@ PREFERENCES_FRAME = "顾客的长期偏好（仅供参考，商品、订单等�
 
 # 顾客说自己的偏好：“我”后面直接跟“喜欢、偏好、习惯、想要、要、用”（中间可以有“更、比较”这类词），
 # 再接值，中间只允许“戴、用、买、的、那种”这类字。“我不喜欢”“我朋友喜欢”“我要问一下入耳式……”都不符合
-_I_PREFER = r"我(?:更|比较|还是|一直|最|平时)?(?:喜欢|偏好|习惯|想要|要|用)"
-_FILLER = r"((?:戴|用|买|选|的|那种|这种|款)*)"
+_I_PREFER = r"我(?:更|比较|还是|一直|最|平时)?(?:喜欢|偏好|习惯|想要|要|用)(?:戴|用|买|选|的|那种|这种|款)*"
 _NEGATION = re.compile("[不别没非]")
 _CLAUSE = re.compile("[，,。.！!？?；;\n]")
 _EARPHONE_ALIASES = {"半入耳": "半入耳式", "入耳": "入耳式", "头戴": "头戴式"}
 _REPLY = re.compile(r"(?:回复|回答)")
-_WISH = re.compile(r"以后|之后|今后|请|麻烦|我喜欢|我希望|我想要")
+# 顾客自己提的要求：分句以“以后、请”这类词开头，或者直接说“我喜欢、我希望”。“我朋友希望以后……”不算
+_WISH = re.compile(r"^\s*(?:以后|之后|今后|请|麻烦)|我(?:喜欢|希望|想要)")
 _CONCISE = re.compile(r"简洁|简短|简单|短一?点")
 _DETAILED = re.compile(r"详细|具体")
 
@@ -71,15 +71,13 @@ def extract_preferences(text: str) -> dict[str, str]:
 
 
 def _stated(clause: str, values: str) -> str | None:
-    """“我更喜欢入耳式”这类说法里的值。“我”和值之间出现否定词时不算。"""
-    match = re.search(_I_PREFER + _FILLER + values, clause)
-    if match is None or _NEGATION.search(match.group(1)):
-        return None
-    return match.group(2)
+    """“我更喜欢入耳式”这类说法里的值。一个分句里说了几次（“我喜欢红轴但我更喜欢茶轴”），取最后一次。"""
+    matches = re.findall(_I_PREFER + values, clause)
+    return matches[-1] if matches else None
 
 
 def _reply_detail(clause: str) -> str | None:
-    """“以后回复简洁点”“我喜欢详细的回答”这类说法：要有“以后、请、我喜欢”这类表示要求的词。
+    """“以后回复简洁点”“我喜欢详细的回答”这类顾客自己提的要求。
     带否定词的（比如“回复不要太详细”）不猜，跳过。"""
     if not (_REPLY.search(clause) and _WISH.search(clause)) or _NEGATION.search(clause):
         return None
