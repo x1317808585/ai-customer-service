@@ -1,10 +1,13 @@
 """知识库：把说明文档按小节存进数据库，按问题检索，并判断依据够不够回答。
 
-现在只做关键词检索：用 Jieba 分词，PostgreSQL 全文检索（GIN 索引）找出含有问题里任意一个词的小节，
+检索目前只用关键词：用 Jieba 分词，PostgreSQL 全文检索（GIN 索引）找出含有问题里任意一个词的小节，
 再看问题里的词有多少出现在这一节里（越少见的词分量越重），以此判断依据是否充分。
 问题里的型号、数字这类词必须原样出现，比如问 K8 的问题不会拿 SoundPods 的小节来回答。
+
+混合检索模式下，重建时还会用向量器给每个小节算向量，并在 knowledge_index 里记下向量签名。
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -13,6 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import Literal, Protocol
 
 import jieba
 from pydantic import BaseModel, ConfigDict
@@ -21,13 +25,16 @@ from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.business.errors import BusinessError
-from app.models import KnowledgeChunk
+from app.models import KnowledgeChunk, KnowledgeIndex
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "knowledge"
 
 MAX_PASSAGES = 3  # 一次最多返回几段原文
 CANDIDATE_LIMIT = 20  # 全文检索先取出多少个候选小节，再逐个判断
 MIN_COVERAGE = 0.6  # 问题里的词（按少见程度加权）至少有这么多出现在小节里，才算依据充分
+
+# 交给分词和向量模型的小节文本格式（见 _passage_text）。改了格式就要改这个版本号，旧向量会被识别为对不上
+PASSAGE_TEXT_VERSION = "title-section-content-v1"
 
 # Jieba 词典里没有、又经常出现在商品说明里的词，不加的话会被切碎（比如“快充”切成“快”“充”）
 DOMAIN_WORDS = ("usb-c", "快充", "快充线", "氮化镓", "茶轴", "热插拔", "背光", "降噪耳机")
@@ -49,7 +56,31 @@ _HAN = re.compile("[\u4e00-\u9fff]")
 
 
 class KnowledgeFormatError(BusinessError):
-    """知识文档的格式不对，整个知识库不会重建。"""
+    """知识文档的格式不对（包括小节超过向量模型的长度上限），整个知识库不会重建。"""
+
+
+class TextTooLongError(BusinessError):
+    """要编码的文本超过了向量模型的长度上限，不截断。index 是它在这一批文本里的位置。
+
+    重建时会转成指明小节来源的 KnowledgeFormatError；消息里只有 token 数，可以告诉顾客。
+    """
+
+    def __init__(self, index: int, tokens: int, limit: int) -> None:
+        super().__init__(f"第 {index + 1} 条文本有 {tokens} 个 token，超过上限 {limit}")
+        self.index = index
+        self.tokens = tokens
+        self.limit = limit
+
+
+class Embedder(Protocol):
+    """把文本变成向量。真实实现在 app/embeddings.py（BGE-M3），测试里用假的。"""
+
+    # 向量签名：签名不同的两个向量器算出来的向量，不能放在一起比较
+    signature: str
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        """返回归一化的向量，和 texts 一一对应。任何一条超过长度上限都不截断，直接抛出 TextTooLongError。"""
+        ...
 
 
 class Passage(BaseModel):
@@ -96,24 +127,41 @@ def read_documents(directory: Path = KNOWLEDGE_DIR) -> list[KnowledgeDocument]:
 
 
 class KnowledgeBase:
-    """知识库：重建、检索。"""
+    """知识库：重建、检索。不传向量器是关键词模式；传了是混合模式，重建时给每个小节算向量。"""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], embedder: Embedder | None = None) -> None:
         self._session_factory = session_factory
+        self._embedder = embedder
+        self._mode: Literal["keyword", "hybrid"] = "keyword" if embedder is None else "hybrid"
+        self._signature = None if embedder is None else f"{embedder.signature};text={PASSAGE_TEXT_VERSION}"
 
     async def rebuild(self, documents: Sequence[KnowledgeDocument]) -> int:
-        """用这些文档整体替换知识库，返回小节数。任何一篇格式不对都不会改动数据库。"""
+        """用这些文档整体替换知识库，返回小节数。
+
+        向量在事务外先全部算好：任何一篇格式不对、任何一节超过向量模型的长度上限，都不会改动数据库。
+        小节和 knowledge_index 在同一个事务里替换，检索时不会看到新旧混在一起的知识库。
+        """
         passages = [passage for document in documents for passage in _split(document)]
         counts = Counter(passage.source_id for passage in passages)
         duplicates = [source_id for source_id, count in counts.items() if count > 1]
         if duplicates:
             raise KnowledgeFormatError(f"来源标识重复：{'、'.join(duplicates)}")
 
+        texts = [_passage_text(passage) for passage in passages]
+        embeddings = await self._embed_passages(passages, texts)
+
         async with self._session_factory.begin() as session:
             await session.execute(delete(KnowledgeChunk))
-            for passage in passages:
-                terms = _document_terms(f"{passage.document_title}\n{passage.section}\n{passage.content}")
-                session.add(KnowledgeChunk(**passage.model_dump(), search_vector=func.array_to_tsvector(sorted(terms))))
+            await session.execute(delete(KnowledgeIndex))
+            for passage, text, embedding in zip(passages, texts, embeddings, strict=True):
+                session.add(
+                    KnowledgeChunk(
+                        **passage.model_dump(),
+                        search_vector=func.array_to_tsvector(sorted(_document_terms(text))),
+                        embedding=embedding,
+                    )
+                )
+            session.add(KnowledgeIndex(id=1, mode=self._mode, embedding_signature=self._signature))
         return len(passages)
 
     async def search(self, question: str) -> SearchResult:
@@ -152,6 +200,24 @@ class KnowledgeBase:
 
         scored.sort(key=lambda item: (-item[0], item[1].id))
         return Supported(passages=tuple(Passage.model_validate(chunk) for _, chunk in scored[:MAX_PASSAGES]))
+
+    async def _embed_passages(self, passages: list[Passage], texts: list[str]) -> list[list[float] | None]:
+        """关键词模式下不算向量；混合模式下一次算完全部小节，超长的小节报出来源。"""
+        if self._embedder is None:
+            return [None] * len(passages)
+        try:
+            # 编码是 CPU 密集的同步计算，放到线程里做，不阻塞事件循环
+            return await asyncio.to_thread(self._embedder.embed, texts)
+        except TextTooLongError as error:
+            raise KnowledgeFormatError(
+                f"{passages[error.index].source_id}：有 {error.tokens} 个 token，"
+                f"超过向量模型的上限 {error.limit}，请拆成更短的小节"
+            ) from error
+
+
+def _passage_text(passage: Passage) -> str:
+    """交给分词和向量模型的小节文本：文档标题、小节标题和原文。格式变了要改 PASSAGE_TEXT_VERSION。"""
+    return f"{passage.document_title}\n{passage.section}\n{passage.content}"
 
 
 def _split(document: KnowledgeDocument) -> list[Passage]:

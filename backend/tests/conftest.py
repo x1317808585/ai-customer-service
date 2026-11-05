@@ -5,6 +5,7 @@ from datetime import datetime
 import httpx
 import pytest
 from langchain_core.tools import BaseTool
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.agent.mcp_toolbox import McpToolbox
@@ -28,10 +29,14 @@ AddOrder = Callable[..., Awaitable[Order]]
 
 @pytest.fixture
 def test_settings() -> Settings:
-    """数据库账号沿用 .env，其余和测试结果有关的配置都在这里固定下来。"""
+    """数据库账号沿用 .env，其余和测试结果有关的配置都在这里固定下来。
+
+    检索模式固定为关键词：.env 里开了混合检索，测试也不会去加载真实的向量模型。
+    """
     return Settings(
         postgres_db=TEST_DATABASE,
         llm_provider="fake",
+        retrieval_mode="keyword",
         frontend_origins=[ALLOWED_FRONTEND_ORIGIN],
         jwt_secret=TEST_JWT_SECRET,
         mcp_token_secret=TEST_MCP_TOKEN_SECRET,
@@ -46,6 +51,8 @@ async def users(test_settings: Settings) -> dict[str, User]:
 
     engine = create_async_engine(test_settings.database_url)
     async with engine.begin() as connection:
+        # 向量列要用 pgvector 扩展。迁移测试会删掉整个 schema（扩展也跟着删掉），所以每次都确保它存在
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await connection.run_sync(Base.metadata.drop_all)
         await connection.run_sync(Base.metadata.create_all)
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:

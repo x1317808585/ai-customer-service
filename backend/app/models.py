@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, true
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -12,6 +13,8 @@ ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
 TicketStatus = Literal["open", "closed"]
 ActionKind = Literal["order", "return_request", "return_cancellation", "ticket"]
 ActionStatus = Literal["pending", "executed", "cancelled", "failed"]
+
+EMBEDDING_DIMENSION = 1024  # BGE-M3 稠密向量的维度
 
 CreatedAt = Annotated[
     datetime,
@@ -254,7 +257,10 @@ class PendingAction(Base):
 
 
 class KnowledgeChunk(Base):
-    """知识库里的一个小节：说明文档按“## 小节标题”切开后的一段原文。整个知识库重建时全部替换。"""
+    """知识库里的一个小节：说明文档按“## 小节标题”切开后的一段原文。
+
+    整个知识库重建时全部替换，并在同一个事务里改写 knowledge_index。
+    """
 
     __tablename__ = "knowledge_chunks"
     __table_args__ = (Index("ix_knowledge_chunks_search_vector", "search_vector", postgresql_using="gin"),)
@@ -267,3 +273,29 @@ class KnowledgeChunk(Base):
     content: Mapped[str] = mapped_column(Text)
     # 文档标题、小节标题和原文分词后的词，用来做全文检索
     search_vector: Mapped[str] = mapped_column(TSVECTOR)
+    # 文档标题、小节标题和原文的 BGE-M3 稠密向量（已归一化）。混合检索模式下重建时写入，关键词模式下为空。
+    # 片段很少，不建 HNSW，按余弦距离精确检索
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSION))
+
+
+class KnowledgeIndex(Base):
+    """知识库当前这一版是怎么建的。只有一行（id 固定为 1），重建时和小节在同一个事务里改写。
+
+    混合检索时据此确认库里的向量和当前加载的模型、编码方式一致，对不上就报错，不拿对不上的向量来比较。
+    """
+
+    __tablename__ = "knowledge_index"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_knowledge_index_single_row"),
+        CheckConstraint("mode IN ('keyword', 'hybrid')", name="ck_knowledge_index_mode"),
+        CheckConstraint(
+            "(mode = 'hybrid') = (embedding_signature IS NOT NULL)", name="ck_knowledge_index_signature"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    # 重建时的检索模式：keyword 或 hybrid
+    mode: Mapped[str] = mapped_column(String(16))
+    # 向量签名：模型指纹、维度、归一化、长度上限和编码文本的格式。关键词模式下为空
+    embedding_signature: Mapped[str | None] = mapped_column(String(200))
+    built_at: Mapped[CreatedAt]

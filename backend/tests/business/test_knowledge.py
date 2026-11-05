@@ -1,5 +1,7 @@
+from collections.abc import Sequence
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -10,7 +12,9 @@ from app.business.knowledge import (
     KnowledgeFormatError,
     Passage,
     Supported,
+    TextTooLongError,
 )
+from app.models import EMBEDDING_DIMENSION, KnowledgeChunk, KnowledgeIndex
 
 KEYBOARD = KnowledgeDocument(
     "keyboard-k8",
@@ -20,6 +24,19 @@ EARBUDS = KnowledgeDocument(
     "soundpods",
     "# SoundPods 降噪耳机说明书\n\n## 保修\n\n整机保修 1 年，从签收之日起计算。\n",
 )
+
+
+class FakeEmbedder:
+    """测试用的向量器：不加载模型，每段文字都给同一个单位向量；超过 MAX_CHARS 个字就当作超长。"""
+
+    signature = "fake;dim=1024"
+    MAX_CHARS = 100
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        for index, passage_text in enumerate(texts):
+            if len(passage_text) > self.MAX_CHARS:
+                raise TextTooLongError(index, len(passage_text), self.MAX_CHARS)
+        return [[1.0] + [0.0] * (EMBEDDING_DIMENSION - 1) for _ in texts]
 
 
 @pytest.fixture
@@ -103,3 +120,42 @@ async def test_database_failure_is_an_error_not_insufficient(
 
     with pytest.raises(DBAPIError):
         await knowledge.search("K8 是什么轴？")
+
+
+async def test_keyword_rebuild_records_keyword_mode_and_stores_no_vectors(
+    knowledge: KnowledgeBase, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    await knowledge.rebuild([KEYBOARD, EARBUDS])
+
+    async with session_factory() as session:
+        embeddings = (await session.scalars(select(KnowledgeChunk.embedding))).all()
+        index = await session.get_one(KnowledgeIndex, 1)
+    assert embeddings == [None, None, None]
+    assert (index.mode, index.embedding_signature) == ("keyword", None)
+
+
+async def test_hybrid_rebuild_stores_a_vector_for_every_section_and_records_its_signature(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await KnowledgeBase(session_factory, FakeEmbedder()).rebuild([KEYBOARD, EARBUDS])
+
+    async with session_factory() as session:
+        embeddings = (await session.scalars(select(KnowledgeChunk.embedding))).all()
+        index = await session.get_one(KnowledgeIndex, 1)
+    assert [len(embedding) for embedding in embeddings] == [EMBEDDING_DIMENSION] * 3
+    assert index.mode == "hybrid"
+    assert index.embedding_signature is not None
+    assert index.embedding_signature.startswith(FakeEmbedder.signature)
+
+
+async def test_section_too_long_for_the_model_is_reported_and_leaves_the_knowledge_base_unchanged(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    knowledge = KnowledgeBase(session_factory, FakeEmbedder())
+    await knowledge.rebuild([KEYBOARD])
+    manual = KnowledgeDocument("manual", "# 长说明书\n\n## 全文\n\n" + "很长的内容。" * 30 + "\n")
+
+    with pytest.raises(KnowledgeFormatError, match="manual#全文"):
+        await knowledge.rebuild([EARBUDS, manual])
+
+    assert isinstance(await knowledge.search("K8 是什么轴？"), Supported)

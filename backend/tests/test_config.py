@@ -4,8 +4,10 @@ from pydantic import ValidationError
 from app.config import Settings
 
 SECRET_SETTINGS = ("jwt_secret", "mcp_token_secret")
+RETRIEVAL_SETTINGS = ("retrieval_mode", "embedding_model_dir")
 SHORT_SECRET = "too-short-secret"
 VALID_SECRET = "a-valid-secret-that-is-at-least-32-chars"
+OTHER_VALID_SECRET = "another-valid-secret-at-least-32-chars"
 
 
 def make_settings(**overrides: str) -> Settings:
@@ -16,7 +18,7 @@ def make_settings(**overrides: str) -> Settings:
 
 @pytest.fixture(autouse=True)
 def clear_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in SECRET_SETTINGS:
+    for name in (*SECRET_SETTINGS, *RETRIEVAL_SETTINGS):
         monkeypatch.delenv(name.upper(), raising=False)
 
 
@@ -44,3 +46,14 @@ def test_the_two_secrets_must_differ() -> None:
         make_settings(jwt_secret=VALID_SECRET, mcp_token_secret=VALID_SECRET)
 
     assert VALID_SECRET not in str(error.value)
+
+
+def test_keyword_retrieval_is_the_default_and_needs_no_model() -> None:
+    settings = make_settings(jwt_secret=VALID_SECRET, mcp_token_secret=OTHER_VALID_SECRET)
+
+    assert settings.retrieval_mode == "keyword"
+
+
+def test_hybrid_retrieval_requires_the_model_directory() -> None:
+    with pytest.raises(ValidationError, match="EMBEDDING_MODEL_DIR"):
+        make_settings(jwt_secret=VALID_SECRET, mcp_token_secret=OTHER_VALID_SECRET, retrieval_mode="hybrid")

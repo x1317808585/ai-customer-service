@@ -10,6 +10,9 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 
 LlmProvider = Literal["fake", "openai_compatible"]
 
+# keyword：只用关键词检索；hybrid：关键词和 BGE-M3 向量两路召回，需要 EMBEDDING_MODEL_DIR
+RetrievalMode = Literal["keyword", "hybrid"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -39,6 +42,10 @@ class Settings(BaseSettings):
     llm_api_key: SecretStr = SecretStr("")
     llm_model: str = ""
 
+    retrieval_mode: RetrievalMode = "keyword"
+    # BGE-M3 模型所在的目录，本机路径或容器里的路径都可以。只有 MCP Server 和导入知识库的脚本会读取它
+    embedding_model_dir: str = ""
+
     @model_validator(mode="after")
     def require_different_secrets(self) -> Self:
         if self.jwt_secret.get_secret_value() == self.mcp_token_secret.get_secret_value():
@@ -56,6 +63,13 @@ class Settings(BaseSettings):
             missing = [name for name, value in required.items() if not value.strip()]
             if missing:
                 raise ValueError(f"LLM_PROVIDER=openai_compatible 时缺少配置：{', '.join(missing)}")
+        return self
+
+    @model_validator(mode="after")
+    def require_model_dir_for_hybrid_retrieval(self) -> Self:
+        """这里只检查有没有填。目录是否存在、模型是否完整，在真正加载模型时检查。"""
+        if self.retrieval_mode == "hybrid" and not self.embedding_model_dir.strip():
+            raise ValueError("RETRIEVAL_MODE=hybrid 时缺少配置：EMBEDDING_MODEL_DIR（BGE-M3 模型所在的目录）")
         return self
 
     @property
