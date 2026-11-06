@@ -15,6 +15,7 @@ import {
   sendMessage,
   type Conversation,
 } from "@/lib/customer/api";
+import { CONNECTION_IDLE_LIMIT_MS, watchIdle } from "@/lib/customer/connection";
 import { applyReplyEvent, type ToolProgress } from "@/lib/customer/replyDraft";
 import { settleReply, type Notice, type ReplyEnding } from "@/lib/customer/replyOutcome";
 import { readSseEvents } from "@/lib/customer/sse";
@@ -190,13 +191,19 @@ export function useChat() {
       replyRequest.current = controller;
       stopRequested.current = false;
       setReplying(true);
+      // 连接活性：收到响应和任何事件（包括心跳）都重新计时；太久什么都没收到，就中止请求，
+      // 按连接中断收尾（下面的收尾逻辑照常处理：重新读取会话记录核对，不自动重发）
+      const idleWatch = watchIdle(CONNECTION_IDLE_LIMIT_MS, () => controller.abort());
 
       let accepted = false;
       let done = false;
       let failure: { detail: string | null } | null = null;
       try {
         const body = await sendMessage(conversationId, text, controller.signal);
+        idleWatch.touch();
         for await (const event of readSseEvents(body)) {
+          idleWatch.touch();
+          if (event.event === "heartbeat") continue; // 心跳只说明连接还活着，不显示
           if (event.event === "message.accepted") {
             accepted = true;
             void refreshConversations();
@@ -245,8 +252,9 @@ export function useChat() {
           setNotice(settleReply({ kind: "rejected", detail: error.message }, true).notice);
           return false;
         }
-        // 断网、5xx、用户点了停止：下面按情况收尾
+        // 断网、5xx、用户点了停止、太久没收到任何事件：下面按情况收尾
       } finally {
+        idleWatch.stop();
         replyRequest.current = null;
         setReplying(false);
       }
