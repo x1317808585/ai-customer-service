@@ -6,12 +6,14 @@
  *
  * 发送消息时，助手的回复按 replies 里排好的脚本生成。保存规则和真实后端一致：用户消息先保存；
  * 确认卡片保存后才推送；回复只有发出 message.done 才保存。脚本没写 done 也没写 error，表示连接中途断开。
+ *
+ * 知识文档上传后是“待处理”。后台建索引的进度由测试直接修改 knowledge 里的数据来模拟。
  */
 
 import type { Page, Request, Route } from "@playwright/test";
 
 import type { ActionView } from "@/lib/actions";
-import type { StaffReturn, StaffTicket } from "@/lib/admin/api";
+import type { KnowledgeDocument, StaffReturn, StaffTicket } from "@/lib/admin/api";
 import type { ChatMessage, User } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import type { Conversation } from "@/lib/customer/api";
@@ -54,6 +56,22 @@ export function returnRequest(changes: Partial<StaffReturn> & { id: number }): S
     customer: "carol",
     delivered_at: "2026-10-24T02:00:00Z",
     resolved_by: null,
+    ...changes,
+  };
+}
+
+/** 一篇知识文档，默认已就绪、已启用。 */
+export function knowledgeDocument(
+  changes: Partial<KnowledgeDocument> & { id: number; name: string; title: string },
+): KnowledgeDocument {
+  return {
+    version: 1,
+    status: "ready",
+    error: null,
+    enabled: true,
+    passages: 2,
+    indexed_at: NOW,
+    updated_at: NOW,
     ...changes,
   };
 }
@@ -117,6 +135,7 @@ export class FakeBackend {
   tickets: StaffTicket[] = [];
   transcripts = new Map<number, ChatMessage[]>();
   returns: StaffReturn[] = [];
+  knowledge: KnowledgeDocument[] = [];
   conversations: Conversation[] = [];
   /** 每个会话的消息。确认卡片消息里的 action 和 actions 里的是同一个对象，确认后两边一起变。 */
   messages = new Map<number, ChatMessage[]>();
@@ -203,7 +222,7 @@ export class FakeBackend {
     const method = request.method();
     const path = apiPath(request);
     const query = new URL(request.url()).searchParams;
-    const body = (request.postDataJSON() ?? {}) as Record<string, unknown>;
+    const body = readJsonBody(request);
 
     if (method === "POST" && path === "/api/auth/login") {
       const user = this.users[String(body.username)];
@@ -224,6 +243,7 @@ export class FakeBackend {
 
     if (path.startsWith("/api/admin/")) {
       if (this.currentUser.role !== "admin") return { status: 403, body: { detail: "需要管理员权限" } };
+      if (path.startsWith("/api/admin/knowledge/")) return this.answerKnowledge(method, path, request);
       return this.answerAdmin(method, path, query, body);
     }
     return { status: 404, body: { detail: `模拟后端没有这个接口：${method} ${path}` } };
@@ -344,6 +364,51 @@ export class FakeBackend {
     }
     return { status: 404, body: { detail: `模拟后端没有这个接口：${method} ${path}` } };
   }
+
+  /** 知识文档：列表按名称排序；上传和重新索引后是“待处理”，之后的进度由测试修改 knowledge 来模拟。 */
+  private answerKnowledge(method: string, path: string, request: Request): Reply {
+    if (path === "/api/admin/knowledge/documents") {
+      if (method === "GET") {
+        return { status: 200, body: [...this.knowledge].sort((a, b) => (a.name < b.name ? -1 : 1)) };
+      }
+      if (method === "POST") return this.upload(request);
+    }
+
+    const match = path.match(/^\/api\/admin\/knowledge\/documents\/(\d+)\/(reindex|enable|disable)$/);
+    if (method === "POST" && match) {
+      const id = Number(match[1]);
+      const found = this.knowledge.find((item) => item.id === id);
+      if (!found) return { status: 404, body: { detail: `知识文档 ${id} 不存在` } };
+      if (match[2] === "reindex") {
+        Object.assign(found, { status: "pending", error: null, passages: null });
+        return { status: 202, body: found };
+      }
+      found.enabled = match[2] === "enable";
+      return { status: 200, body: found };
+    }
+    return { status: 404, body: { detail: `模拟后端没有这个接口：${method} ${path}` } };
+  }
+
+  /** 和真实接口一样：只收 .md；第一行不是“# 标题”返回 422；同名就是更新，版本加 1。 */
+  private upload(request: Request): Reply {
+    const file = readUploadedFile(request);
+    if (!file || !file.filename.toLowerCase().endsWith(".md")) {
+      return { status: 422, body: { detail: "只支持 .md 文件" } };
+    }
+    const name = file.filename.slice(0, -3);
+    const title = file.text.trimStart().match(/^# (.+)/)?.[1]?.trim();
+    if (!title) return { status: 422, body: { detail: `${name}：第一行必须是“# 文档标题”` } };
+
+    const changes = { title, status: "pending", error: null, passages: null, updated_at: NOW } as const;
+    const existing = this.knowledge.find((item) => item.name === name);
+    if (existing) {
+      Object.assign(existing, { ...changes, version: existing.version + 1 });
+      return { status: 202, body: existing };
+    }
+    const created = knowledgeDocument({ id: this.knowledge.length + 1, name, ...changes, indexed_at: null });
+    this.knowledge.push(created);
+    return { status: 202, body: created };
+  }
 }
 
 const FINISHED_TEXT: Record<StaffReturn["status"], string> = {
@@ -362,6 +427,21 @@ function newestFirst<T extends { id: number }>(items: T[]): T[] {
 function apiPath(request: Request): string {
   const { pathname } = new URL(request.url());
   return pathname.slice(pathname.indexOf(FAKE_API_PATH) + FAKE_API_PATH.length);
+}
+
+/** JSON 请求体；没有请求体，或者不是 JSON（比如上传文件的 multipart）时当作空的。 */
+function readJsonBody(request: Request): Record<string, unknown> {
+  try {
+    return (request.postDataJSON() ?? {}) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** 从 multipart 请求体里取出上传的文件名和文本内容。 */
+function readUploadedFile(request: Request): { filename: string; text: string } | null {
+  const match = (request.postData() ?? "").match(/filename="([^"]*)"[\s\S]*?\r\n\r\n([\s\S]*?)\r\n--/);
+  return match ? { filename: match[1], text: match[2] } : null;
 }
 
 function event(type: string, data: unknown): string {

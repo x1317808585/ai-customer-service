@@ -12,6 +12,7 @@ import { useCurrentUser } from "@/hooks/useCurrentUser";
 const SECTIONS = [
   { href: "/admin/tickets", label: "工单" },
   { href: "/admin/returns", label: "退货申请" },
+  { href: "/admin/knowledge", label: "知识库" },
 ];
 
 /**

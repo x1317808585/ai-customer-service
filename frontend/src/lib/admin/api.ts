@@ -12,6 +12,9 @@ export type TicketStatus = (typeof TICKET_STATUSES)[number];
 export const RETURN_STATUSES = ["pending", "completed", "rejected", "cancelled"] as const;
 export type ReturnStatus = (typeof RETURN_STATUSES)[number];
 
+export const KNOWLEDGE_STATUSES = ["pending", "processing", "ready", "failed"] as const;
+export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
+
 /** 管理员看到的工单：比顾客多了顾客名、来源会话和处理人。 */
 export type StaffTicket = {
   id: number;
@@ -53,6 +56,26 @@ export type StaffReturn = {
   resolved_by: string | null;
 };
 
+/** 一篇知识文档。对应后端 business/knowledge_documents.py 里的 DocumentView。 */
+export type KnowledgeDocument = {
+  id: number;
+  /** 文件名去掉 .md */
+  name: string;
+  title: string;
+  /** 内容版本，每次上传新内容加 1 */
+  version: number;
+  status: KnowledgeStatus;
+  /** 失败原因 */
+  error: string | null;
+  enabled: boolean;
+  /** 已就绪时的段落数，其他状态为 null */
+  passages: number | null;
+  /** 上次建好索引的时间 */
+  indexed_at: string | null;
+  /** 最近一次上传新内容的时间 */
+  updated_at: string;
+};
+
 export async function listTickets(status: TicketStatus, signal?: AbortSignal): Promise<StaffTicket[]> {
   return (await request(`/api/admin/tickets?status=${status}`, { signal })).json();
 }
@@ -80,6 +103,28 @@ export async function completeReturn(returnId: number, note: string | null): Pro
 
 export async function rejectReturn(returnId: number, reason: string): Promise<StaffReturn> {
   return (await request(`/api/admin/returns/${returnId}/reject`, jsonBody("POST", { reason }))).json();
+}
+
+export async function listKnowledgeDocuments(signal?: AbortSignal): Promise<KnowledgeDocument[]> {
+  return (await request("/api/admin/knowledge/documents", { signal })).json();
+}
+
+/** 上传一篇 .md 文档，同名就是更新。后端只安排建索引就返回，返回的文档通常是“待处理”。 */
+export async function uploadKnowledgeDocument(file: File): Promise<KnowledgeDocument> {
+  const body = new FormData();
+  body.append("file", file);
+  return (await request("/api/admin/knowledge/documents", { method: "POST", body })).json();
+}
+
+/** 重新建索引：文档马上退出检索，建好后回来。 */
+export async function reindexKnowledgeDocument(documentId: number): Promise<KnowledgeDocument> {
+  return (await request(`/api/admin/knowledge/documents/${documentId}/reindex`, { method: "POST" })).json();
+}
+
+/** 启用或停用，下一次检索就生效。 */
+export async function setKnowledgeDocumentEnabled(documentId: number, enabled: boolean): Promise<KnowledgeDocument> {
+  const action = enabled ? "enable" : "disable";
+  return (await request(`/api/admin/knowledge/documents/${documentId}/${action}`, { method: "POST" })).json();
 }
 
 type StaleRecords = { ticket: StaffTicket; return: StaffReturn };
