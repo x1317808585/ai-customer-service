@@ -17,6 +17,7 @@ from app.agent.reply_agent import ReplyAgent, Toolbox
 from app.api.actions import router as actions_router
 from app.api.admin import router as admin_router
 from app.api.admin.errors import StaleRecordError
+from app.api.assistant import router as assistant_router
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.memories import router as memories_router
@@ -83,6 +84,7 @@ def create_app(
     app.include_router(actions_router)
     app.include_router(admin_router)
     app.include_router(memories_router)
+    app.include_router(assistant_router)
 
     @app.exception_handler(ConversationNotFoundError)
     async def conversation_not_found(_request: Request, _error: Exception) -> JSONResponse:

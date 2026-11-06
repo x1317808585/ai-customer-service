@@ -6,6 +6,7 @@ import { CircleAlert, Info, TriangleAlert, type LucideIcon } from "lucide-react"
 import { ConversationSidebar } from "@/components/customer/ConversationSidebar";
 import { MessageComposer } from "@/components/customer/MessageComposer";
 import { MessageList } from "@/components/customer/MessageList";
+import { OfflineDemoGuide } from "@/components/customer/OfflineDemoGuide";
 import { Button } from "@/components/ui/button";
 import { useChat } from "@/hooks/customer/useChat";
 import type { User } from "@/lib/api";
@@ -45,6 +46,7 @@ export function ChatScreen({ user, onLogOut }: Props) {
             {title}
           </h1>
         </header>
+        <OfflineDemoGuide onPick={pickQuestion} />
         {chat.notice && (
           <NoticeBar notice={chat.notice} reloadDisabled={chat.replying} onReload={chat.reloadConversation} />
         )}
