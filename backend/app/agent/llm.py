@@ -49,6 +49,7 @@ OFFLINE_RECORD_STATUS = {
         "说明",
     ),
 }
+OFFLINE_ORDER_STATUS = {"placed": "已下单", "shipped": "已发货", "delivered": "已签收", "cancelled": "已取消"}
 # 演示发起待确认操作的规则（按顺序匹配）：
 # - “下单 商品 N”：预览购买商品 N 一件；带“M 件”时买 M 件
 # - “转人工”：预览转人工工单，摘要是用户原话；消息里有“订单 N”时关联订单 N
@@ -88,7 +89,8 @@ class OfflineChatModel(BaseChatModel):
     2. 消息里有“政策”“保修”这类知识类的词时，查知识库；
     3. 消息里有“订单”“退货”“工单”“商品”时，调用对应的查询工具；
     4. 其余的消息都查知识库；没有绑定知识库工具时，把用户的话按固定格式逐字返回。
-    收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果，商品会列出编号、价格和库存；
+    收到工具结果后，回复查到了几条记录；工单和退货申请还会逐条说明处理状态和结果，商品会列出编号、价格和库存，
+    订单会列出状态和每个订单项的编号（退货要用订单项编号）；
     查到知识库的依据时，按引用格式摘录排在第一的那段原文，没有依据时直说没有找到。
     """
 
@@ -204,6 +206,9 @@ def _summarize_tool_results(results: list[ToolMessage]) -> str:
         if result.name == "search_products" and records:
             parts.append(f"查到 {len(records)} 个商品：" + "；".join(_product_line(record) for record in records))
             continue
+        if result.name == "list_my_orders" and records:
+            parts.append(f"查到 {len(records)} 条订单：" + "；".join(_order_line(record) for record in records))
+            continue
         if (statuses := OFFLINE_RECORD_STATUS.get(result.name or "")) and records:
             parts.append(f"查到 {len(records)} 条{label}：" + "；".join(_with_status(r, *statuses) for r in records))
             continue
@@ -227,6 +232,17 @@ def _with_status(record: dict[str, Any], status_text: dict[str, str], detail_fie
     text = f"{record.get('id')} {status_text.get(status, status)}"
     detail = record.get(detail_field)
     return text + (f"（{detail_name}：{detail}）" if detail else "")
+
+
+def _order_line(order: dict[str, Any]) -> str:
+    """一个订单的编号、状态和每个订单项的编号，退货时要用订单项编号。
+    比如“订单 1 已签收（订单项 1 SoundPods 降噪耳机 ×1、订单项 2 USB-C 快充线 1 米 ×2）”。
+    """
+    status = order.get("status", "")
+    items = "、".join(
+        f"订单项 {item.get('id')} {item.get('product_name')} ×{item.get('quantity')}" for item in order.get("items", [])
+    )
+    return f"订单 {order.get('id')} {OFFLINE_ORDER_STATUS.get(status, status)}" + (f"（{items}）" if items else "")
 
 
 def _product_line(product: dict[str, Any]) -> str:

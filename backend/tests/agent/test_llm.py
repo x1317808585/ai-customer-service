@@ -89,7 +89,24 @@ async def test_offline_model_without_tools_just_echoes() -> None:
 @pytest.mark.parametrize(
     ("structured", "status", "expected"),
     [
-        ({"result": [{"id": 5}, {"id": 3}]}, "success", "（离线模式）查到 2 条订单（编号 5、3）。"),
+        (
+            {
+                "result": [
+                    {
+                        "id": 5,
+                        "status": "delivered",
+                        "items": [
+                            {"id": 7, "product_name": "SoundPods 降噪耳机", "quantity": 1},
+                            {"id": 8, "product_name": "USB-C 快充线 1 米", "quantity": 2},
+                        ],
+                    },
+                    {"id": 3, "status": "placed", "items": [{"id": 4, "product_name": "机械键盘 K8", "quantity": 1}]},
+                ]
+            },
+            "success",
+            "（离线模式）查到 2 条订单：订单 5 已签收（订单项 7 SoundPods 降噪耳机 ×1、订单项 8 USB-C 快充线 1 米 ×2）；"
+            "订单 3 已下单（订单项 4 机械键盘 K8 ×1）。",
+        ),
         ({"result": []}, "success", "（离线模式）查到 0 条订单。"),
         (None, "error", "（离线模式）查询订单失败。"),
     ],

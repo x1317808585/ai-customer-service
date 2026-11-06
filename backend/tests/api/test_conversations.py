@@ -327,9 +327,12 @@ async def test_alice_and_bob_asking_together_each_get_only_their_own_orders(
 
     alice_reply, bob_reply = await asyncio.gather(ask("alice"), ask("bob"))
 
-    newest_first = "、".join(str(order.id) for order in reversed(alice_orders))
-    assert alice_reply == f"（离线模式）查到 2 条订单（编号 {newest_first}）。"
-    assert bob_reply == f"（离线模式）查到 1 条订单（编号 {bob_order.id}）。"
+    # 各自只查到自己的订单（条数对得上，也不出现对方的订单号），最新的在前
+    newer, older = (alice_reply.index(f"订单 {order.id} 已发货（") for order in reversed(alice_orders))
+    assert alice_reply.startswith("（离线模式）查到 2 条订单：")
+    assert newer < older
+    assert f"订单 {bob_order.id} " not in alice_reply
+    assert bob_reply.startswith(f"（离线模式）查到 1 条订单：订单 {bob_order.id} 已下单（")
 
 
 async def test_unreachable_mcp_ends_the_reply_with_a_clear_error(
