@@ -4,6 +4,7 @@ from fastapi import Cookie, Depends, HTTPException, Request, status
 
 from app.actions import ActionService
 from app.auth import InvalidTokenError, read_user_id
+from app.business.knowledge_documents import KnowledgeDocuments
 from app.business.returns import Returns
 from app.business.tickets import Tickets
 from app.config import Settings
@@ -69,6 +70,10 @@ def get_returns(request: Request) -> Returns:
     return request.app.state.returns
 
 
+def get_knowledge_documents(request: Request) -> KnowledgeDocuments:
+    return request.app.state.knowledge_documents
+
+
 def get_preferences(session_factory: SessionFactoryDep) -> Preferences:
     return Preferences(session_factory)
 
@@ -79,4 +84,5 @@ ConversationServiceDep = Annotated[ConversationService, Depends(get_conversation
 ActionServiceDep = Annotated[ActionService, Depends(get_action_service)]
 TicketsDep = Annotated[Tickets, Depends(get_tickets)]
 ReturnsDep = Annotated[Returns, Depends(get_returns)]
+KnowledgeDocumentsDep = Annotated[KnowledgeDocuments, Depends(get_knowledge_documents)]
 PreferencesDep = Annotated[Preferences, Depends(get_preferences)]

@@ -21,6 +21,7 @@ from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
 from app.api.memories import router as memories_router
 from app.api.trusted_origin import TrustedOriginMiddleware
+from app.business.knowledge_documents import KnowledgeDocuments
 from app.business.orders import Orders
 from app.business.returns import Returns
 from app.business.tickets import Tickets
@@ -31,6 +32,7 @@ from app.conversations import (
     ConversationService,
 )
 from app.database import SessionDep
+from app.embeddings import load_embedder
 
 
 def create_app(
@@ -52,12 +54,17 @@ def create_app(
         returns = Returns(session_factory)
         tickets = Tickets(session_factory)
         action_service = ActionService(session_factory, build_action_kinds(orders, returns, tickets))
+        # 混合检索模式下要给上传的文档算向量，在这里加载 BGE-M3（大约十几秒，多占约 2GB 内存）
+        knowledge_documents = KnowledgeDocuments(session_factory, load_embedder(app_settings))
+        # 上次退出时没做完的索引任务都标成失败，管理员可以重新索引。只适用于单个后端进程，见 fail_interrupted
+        await knowledge_documents.fail_interrupted()
 
         app.state.session_factory = session_factory
         app.state.returns = returns
         app.state.tickets = tickets
         app.state.action_service = action_service
         app.state.conversation_service = ConversationService(session_factory, reply_agent, action_service)
+        app.state.knowledge_documents = knowledge_documents
         yield
         await engine.dispose()
 

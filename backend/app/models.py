@@ -13,6 +13,7 @@ ReturnStatus = Literal["pending", "completed", "rejected", "cancelled"]
 TicketStatus = Literal["open", "closed"]
 ActionKind = Literal["order", "return_request", "return_cancellation", "ticket"]
 ActionStatus = Literal["pending", "executed", "cancelled", "failed"]
+KnowledgeDocumentStatus = Literal["pending", "processing", "ready", "failed"]
 
 EMBEDDING_DIMENSION = 1024  # BGE-M3 稠密向量的维度
 
@@ -60,7 +61,7 @@ class Message(Base):
     )
     role: Mapped[MessageRole] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
-    # 助手回复引用的知识库原文快照（出处和原文），没有引用时为空。知识库重建后也不变
+    # 助手回复引用的知识库原文快照（出处和原文），没有引用时为空。知识库更新后也不变
     citations: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     created_at: Mapped[CreatedAt]
 
@@ -256,46 +257,62 @@ class PendingAction(Base):
     created_at: Mapped[CreatedAt]
 
 
-class KnowledgeChunk(Base):
-    """知识库里的一个小节：说明文档按“## 小节标题”切开后的一段原文。
+class KnowledgeDocument(Base):
+    """一篇知识文档：管理员上传或从 backend/knowledge 导入的 Markdown 原文，以及它的索引状态。
 
-    整个知识库重建时全部替换，并在同一个事务里改写 knowledge_index。
+    数据库是文档的来源。内容版本每次上传新内容加 1，索引任务号每次安排建索引加 1，两者都在数据库里原子递增；
+    过期的索引任务据此认出自己已经作废。只有启用并且已就绪的文档能被检索。
     """
 
-    __tablename__ = "knowledge_chunks"
-    __table_args__ = (Index("ix_knowledge_chunks_search_vector", "search_vector", postgresql_using="gin"),)
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'ready', 'failed')", name="ck_knowledge_documents_status"
+        ),
+        CheckConstraint(
+            "(status = 'ready') = (indexed_version IS NOT NULL)", name="ck_knowledge_documents_indexed_version"
+        ),
+        CheckConstraint("(status = 'failed') = (error IS NOT NULL)", name="ck_knowledge_documents_error"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # 来源标识：“文件名#小节标题”，文件名和小节标题不变，重建后也不变
+    # 文件名去掉 .md，也是来源标识的前半部分
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    title: Mapped[str] = mapped_column(String(100))
+    markdown: Mapped[str] = mapped_column(Text)
+    version: Mapped[int]  # 内容版本：每次上传新内容加 1
+    index_job: Mapped[int]  # 索引任务号：每次安排建索引加 1
+    status: Mapped[KnowledgeDocumentStatus] = mapped_column(String(16))
+    error: Mapped[str | None] = mapped_column(String(500))  # 失败原因，管理员能看到
+    enabled: Mapped[bool] = mapped_column(server_default=true())
+    indexed_version: Mapped[int | None]  # 已就绪时，段落是按哪个内容版本建的
+    # 已就绪时的向量签名（模型指纹、编码方式）；关键词模式建的索引为空
+    embedding_signature: Mapped[str | None] = mapped_column(String(200))
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # 上次建好索引的时间
+    created_at: Mapped[CreatedAt]
+    updated_at: Mapped[CreatedAt]  # 最近一次上传新内容的时间
+
+
+class KnowledgeChunk(Base):
+    """知识文档里的一个原文段落：一个小节，或者长小节切出来的一块。重新建索引时，这篇文档的段落整体替换。"""
+
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (
+        Index("ix_knowledge_chunks_search_vector", "search_vector", postgresql_using="gin"),
+        UniqueConstraint("document_id", "position", name="uq_knowledge_chunks_document_position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    # 在文档里的位置（从 0 开始）。检索同分时按文档名称和这个位置排，不受写入顺序影响
+    position: Mapped[int]
+    # 来源标识：“文件名#小节标题”，长小节切开后是“文件名#小节标题#序号”
     source_id: Mapped[str] = mapped_column(String(200), unique=True)
     document_title: Mapped[str] = mapped_column(String(100))
     section: Mapped[str] = mapped_column(String(100))
     content: Mapped[str] = mapped_column(Text)
     # 文档标题、小节标题和原文分词后的词，用来做全文检索
     search_vector: Mapped[str] = mapped_column(TSVECTOR)
-    # 文档标题、小节标题和原文的 BGE-M3 稠密向量（已归一化）。混合检索模式下重建时写入，关键词模式下为空。
+    # 文档标题、小节标题和原文的 BGE-M3 稠密向量（已归一化）。混合检索模式下写入，关键词模式下为空。
     # 片段很少，不建 HNSW，按余弦距离精确检索
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSION))
-
-
-class KnowledgeIndex(Base):
-    """知识库当前这一版是怎么建的。只有一行（id 固定为 1），重建时和小节在同一个事务里改写。
-
-    混合检索时据此确认库里的向量和当前加载的模型、编码方式一致，对不上就报错，不拿对不上的向量来比较。
-    """
-
-    __tablename__ = "knowledge_index"
-    __table_args__ = (
-        CheckConstraint("id = 1", name="ck_knowledge_index_single_row"),
-        CheckConstraint("mode IN ('keyword', 'hybrid')", name="ck_knowledge_index_mode"),
-        CheckConstraint(
-            "(mode = 'hybrid') = (embedding_signature IS NOT NULL)", name="ck_knowledge_index_signature"
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
-    # 重建时的检索模式：keyword 或 hybrid
-    mode: Mapped[str] = mapped_column(String(16))
-    # 向量签名：模型指纹、维度、归一化、长度上限和编码文本的格式。关键词模式下为空
-    embedding_signature: Mapped[str | None] = mapped_column(String(200))
-    built_at: Mapped[CreatedAt]

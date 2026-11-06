@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.agent.mcp_toolbox import McpToolbox
 from app.auth import hash_password
+from app.business.knowledge import DocumentFile, Embedder
+from app.business.knowledge_documents import KnowledgeDocuments
 from app.config import Settings
 from app.mcp_server.main import create_mcp_app
 from app.models import Base, Order, OrderItem, OrderStatus, Product, User
@@ -25,6 +27,7 @@ TEST_PASSWORD_HASH = hash_password(TEST_PASSWORD)
 
 AddProduct = Callable[..., Awaitable[int]]
 AddOrder = Callable[..., Awaitable[Order]]
+LoadKnowledge = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture
@@ -73,6 +76,21 @@ async def session_factory(
     engine = create_async_engine(test_settings.database_url)
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
+
+
+@pytest.fixture
+def load_knowledge(session_factory: async_sessionmaker[AsyncSession]) -> LoadKnowledge:
+    """把这些文档保存进测试库并建好索引（同名就是更新），确认每篇都已就绪。embedder 不传是关键词模式。"""
+
+    async def _load_knowledge(files: Sequence[DocumentFile], embedder: Embedder | None = None) -> None:
+        documents = KnowledgeDocuments(session_factory, embedder)
+        for file in files:
+            job = await documents.save(file)
+            await documents.index(job)
+            view = await documents.get(job.document_id)
+            assert view.status == "ready", f"{file.name} 建索引失败：{view.error}"
+
+    return _load_knowledge
 
 
 @pytest.fixture

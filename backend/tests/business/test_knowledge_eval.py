@@ -52,6 +52,7 @@ from app.business.knowledge import (
 )
 from app.config import Settings
 from app.embeddings import BgeM3Embedder
+from tests.conftest import LoadKnowledge
 
 Category = Literal["型号", "换说法", "无答案"]
 
@@ -167,12 +168,13 @@ def bge_m3() -> Embedder:
 
 
 @pytest.mark.parametrize("group", KEYWORD_GROUPS)
-async def test_keyword_retrieval_meets_the_bar(session_factory: async_sessionmaker[AsyncSession], group: str) -> None:
+async def test_keyword_retrieval_meets_the_bar(
+    session_factory: async_sessionmaker[AsyncSession], load_knowledge: LoadKnowledge, group: str
+) -> None:
     name, cases = GROUPS[group]
-    knowledge = KnowledgeBase(session_factory)
-    await knowledge.rebuild(read_documents())
+    await load_knowledge(read_documents())
 
-    results = await run_cases(knowledge, cases)
+    results = await run_cases(KnowledgeBase(session_factory), cases)
 
     report = format_report(f"{name}，检索模式：关键词", results)
     print(report)
@@ -180,18 +182,17 @@ async def test_keyword_retrieval_meets_the_bar(session_factory: async_sessionmak
 
 
 @pytest.mark.embedding
-@pytest.mark.timeout(300)  # 第一次要加载模型，再给 27 个小节算向量
+@pytest.mark.timeout(300)  # 第一次要加载模型，再给全部段落算向量
 @pytest.mark.parametrize("group", GROUPS)
 async def test_hybrid_retrieval_meets_the_bar(
-    session_factory: async_sessionmaker[AsyncSession], bge_m3: Embedder, group: str
+    session_factory: async_sessionmaker[AsyncSession], load_knowledge: LoadKnowledge, bge_m3: Embedder, group: str
 ) -> None:
     name, cases = GROUPS[group]
-    hybrid = KnowledgeBase(session_factory, bge_m3)
-    await hybrid.rebuild(read_documents())
+    await load_knowledge(read_documents(), bge_m3)
 
     # 同一版知识库上只用关键词检索的结果，用来逐题对比
     baseline = await run_cases(KnowledgeBase(session_factory), cases)
-    results = await run_cases(hybrid, cases)
+    results = await run_cases(KnowledgeBase(session_factory, bge_m3), cases)
 
     title = f"{name}，检索模式：混合（关键词 + BGE-M3），τ = {MIN_SIMILARITY}"
     report = format_report(title, results, baseline)

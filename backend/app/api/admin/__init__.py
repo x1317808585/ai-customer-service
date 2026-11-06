@@ -5,6 +5,7 @@
 
 from fastapi import APIRouter, Depends
 
+from app.api.admin.knowledge import router as knowledge_router
 from app.api.admin.returns import router as returns_router
 from app.api.admin.tickets import router as tickets_router
 from app.api.dependencies import require_admin
@@ -12,3 +13,4 @@ from app.api.dependencies import require_admin
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 router.include_router(tickets_router)
 router.include_router(returns_router)
+router.include_router(knowledge_router)
