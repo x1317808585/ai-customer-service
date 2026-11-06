@@ -1,0 +1,6 @@
+.venv
+**/__pycache__
+.pytest_cache
+tests
+# 本地配置和密钥不进镜像，运行时由 docker-compose.yml 从根目录的 .env 注入
+.env*

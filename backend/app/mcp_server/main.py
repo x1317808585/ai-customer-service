@@ -1,10 +1,12 @@
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from starlette.applications import Starlette
 from starlette.routing import Mount
@@ -37,6 +39,18 @@ class UserTokenVerifier:
         return AccessToken(token=token, client_id=BACKEND_CLIENT_ID, scopes=[], subject=str(user_id))
 
 
+def allowed_hosts(settings: Settings) -> TransportSecuritySettings:
+    """只接受发往这些地址的请求（防 DNS 重绑定，主机名不对返回 421）。
+
+    除了本机，还要放行 MCP_SERVER_URL 里的主机和端口：比如 Docker Compose 里后端用 http://mcp:8001/mcp 访问。
+    """
+    own_host = urlsplit(settings.mcp_server_url).netloc
+    return TransportSecuritySettings(
+        allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", own_host],
+        allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+    )
+
+
 def create_mcp_app(settings: Settings | None = None) -> Starlette:
     """创建 MCP Server 的 ASGI 应用。settings 不传时读取 .env。
 
@@ -58,6 +72,7 @@ def create_mcp_app(settings: Settings | None = None) -> Starlette:
             resource_server_url=app_settings.mcp_server_url,
             validate_token_resource=False,  # 令牌的 aud 已经由 UserTokenVerifier 校验
         ),
+        transport_security=allowed_hosts(app_settings),
         stateless_http=True,
         json_response=True,
     )
