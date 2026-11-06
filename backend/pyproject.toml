@@ -40,5 +40,6 @@ explicit = true
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
-addopts = ["--import-mode=importlib"]
+addopts = ["--import-mode=importlib", "-m", "not embedding"]
+markers = ["embedding: 需要真实的 BGE-M3 模型（EMBEDDING_MODEL_DIR），默认不跑，用 -m embedding 运行"]
 timeout = 60

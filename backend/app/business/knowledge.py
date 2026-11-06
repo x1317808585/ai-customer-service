@@ -1,10 +1,14 @@
 """知识库：把说明文档按小节存进数据库，按问题检索，并判断依据够不够回答。
 
-检索目前只用关键词：用 Jieba 分词，PostgreSQL 全文检索（GIN 索引）找出含有问题里任意一个词的小节，
-再看问题里的词有多少出现在这一节里（越少见的词分量越重），以此判断依据是否充分。
-问题里的型号、数字这类词必须原样出现，比如问 K8 的问题不会拿 SoundPods 的小节来回答。
+检索分两路，各取前 CANDIDATE_LIMIT 个候选：
+- 关键词：用 Jieba 分词，PostgreSQL 全文检索（GIN 索引）找出含有问题里任意一个词的小节，
+  再看问题里的词有多少出现在这一节里（越少见的词分量越重），即覆盖率。
+- 向量（只在混合检索模式下）：用 BGE-M3 算出问题的向量，按余弦距离精确找出最接近的小节。
 
-混合检索模式下，重建时还会用向量器给每个小节算向量，并在 knowledge_index 里记下向量签名。
+两路的名次用 RRF 融合排序（同分规则见 fused_order）。一个候选满足下面任意一条就算依据：
+- 关键词判断通过：型号、数字原样出现；不是只靠文档标题命中；覆盖率达到 MIN_COVERAGE。
+- 向量判断通过：相似度达到 MIN_SIMILARITY（τ），并且型号、数字原样出现。
+问题里的型号、数字必须原样出现对两路都生效，比如问 K8 的问题不会拿 SoundPods 的小节来回答。
 """
 
 import asyncio
@@ -12,7 +16,8 @@ import logging
 import math
 import re
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -20,7 +25,7 @@ from typing import Literal, Protocol
 
 import jieba
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import cast, delete, func, select
+from sqlalchemy import cast, delete, func, null, select
 from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,9 +34,15 @@ from app.models import KnowledgeChunk, KnowledgeIndex
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "knowledge"
 
-MAX_PASSAGES = 3  # 一次最多返回几段原文
-CANDIDATE_LIMIT = 20  # 全文检索先取出多少个候选小节，再逐个判断
-MIN_COVERAGE = 0.6  # 问题里的词（按少见程度加权）至少有这么多出现在小节里，才算依据充分
+# 一次最多返回几段原文。关键词判断还分不清同一说明书里的无关小节（会把它们一起带上），
+# 所以先只返回最相关的一段；以后接入重排，再按评测结果决定是否放宽
+MAX_PASSAGES = 1
+CANDIDATE_LIMIT = 20  # 每一路先取出多少个候选小节，再逐个判断
+MIN_COVERAGE = 0.6  # 问题里的词（按少见程度加权）至少有这么多出现在小节里，关键词判断才通过
+# τ：只靠向量这一路成为依据时，和问题的余弦相似度（BGE-M3）至少要多少。只用评测的调参组来定：
+# 调参组里无答案题的最高相似度是 0.609，换说法题正确小节的最低相似度是 0.725，取两者中间
+MIN_SIMILARITY = 0.67
+RRF_K = 60  # RRF 融合：每一路的第 n 名贡献 1 / (RRF_K + n) 分
 
 # 交给分词和向量模型的小节文本格式（见 _passage_text）。改了格式就要改这个版本号，旧向量会被识别为对不上
 PASSAGE_TEXT_VERSION = "title-section-content-v1"
@@ -72,6 +83,10 @@ class TextTooLongError(BusinessError):
         self.limit = limit
 
 
+class QuestionTooLongError(BusinessError):
+    """问题超过了向量模型的长度上限。不截断问题，让助手精简后再查。"""
+
+
 class Embedder(Protocol):
     """把文本变成向量。真实实现在 app/embeddings.py（BGE-M3），测试里用假的。"""
 
@@ -95,7 +110,7 @@ class Passage(BaseModel):
 
 
 class Supported(BaseModel):
-    """找到了充分的依据：1～3 段原文，每段都通过了判断，最相关的在前。"""
+    """找到了充分的依据：通过判断的原文（目前只有最相关的一段，见 MAX_PASSAGES）。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -109,6 +124,47 @@ class Insufficient(BaseModel):
 
 
 SearchResult = Supported | Insufficient
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """一个候选小节：它在两路召回里的名次和分数，以及依据判断的结果。检索和评测报告用的是同一份。"""
+
+    passage: Passage
+    keyword_rank: int | None  # 关键词这一路的名次（按覆盖率排，从 1 开始）；没被关键词召回时为 None
+    coverage: float  # 问题里的词（按少见程度加权）有多少出现在这一节里
+    keyword_ok: bool  # 关键词判断通过：型号数字原样出现、不只靠文档标题命中、覆盖率达标
+    vector_rank: int | None  # 向量这一路的名次（从 1 开始）；关键词模式下或没被向量召回时为 None
+    similarity: float | None  # 和问题的余弦相似度；关键词模式下为 None
+    exact_ok: bool  # 问题里的型号、数字都原样出现在这一节（含文档标题）里
+    rrf: float  # 两路名次融合后的分数，越大越靠前
+
+    @property
+    def vector_ok(self) -> bool:
+        """向量判断通过：相似度达到 τ，并且型号、数字原样出现。"""
+        return self.similarity is not None and self.similarity >= MIN_SIMILARITY and self.exact_ok
+
+    @property
+    def is_evidence(self) -> bool:
+        return self.keyword_ok or self.vector_ok
+
+
+def fused_order(candidates: Iterable[Candidate]) -> list[Candidate]:
+    """融合后的最终顺序：RRF 降序 → 关键词名次升序（没有关键词名次的排在后面）→ 来源标识。
+
+    两路名次互换时（比如 1、2 和 2、1）RRF 必然相同，这时关键词名次靠前的优先：按设计，关键词负责型号和术语。
+    这是工程取舍，要靠评测验证。最后用来源标识兜底，不用数据库 ID，最终排序不受候选列表顺序和写入顺序影响。
+    注意：关键词这一路内部覆盖率相同时，仍然按写入顺序排名次，这一点这里管不到。
+    """
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            -candidate.rrf,
+            candidate.keyword_rank is None,
+            candidate.keyword_rank or 0,
+            candidate.passage.source_id,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -127,7 +183,7 @@ def read_documents(directory: Path = KNOWLEDGE_DIR) -> list[KnowledgeDocument]:
 
 
 class KnowledgeBase:
-    """知识库：重建、检索。不传向量器是关键词模式；传了是混合模式，重建时给每个小节算向量。"""
+    """知识库：重建、检索。不传向量器是关键词模式；传了是混合模式，重建时给每个小节算向量，检索时两路召回。"""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession], embedder: Embedder | None = None) -> None:
         self._session_factory = session_factory
@@ -164,42 +220,130 @@ class KnowledgeBase:
             session.add(KnowledgeIndex(id=1, mode=self._mode, embedding_signature=self._signature))
         return len(passages)
 
+    async def check_index(self) -> None:
+        """混合模式下确认库里的向量是用当前模型和编码方式算的，对不上就抛出异常。关键词模式不依赖向量，不用检查。
+
+        MCP Server 启动时调用。每次检索还会在同一个快照里再核对一次，运行期间有人换了模式重建也能发现。
+        """
+        if self._embedder is None:
+            return
+        async with self._session_factory() as session:
+            await self._check_index(session)
+
     async def search(self, question: str) -> SearchResult:
-        """检索问题的依据。数据库出错时直接抛出异常，不会当作“没有依据”。"""
+        """检索问题的依据：按融合后的名次，取通过判断的前 MAX_PASSAGES 段。
+
+        数据库出错、知识库的向量和当前模型对不上时直接抛出异常，不会当作“没有依据”。
+        """
+        evidence = [candidate.passage for candidate in await self.candidates(question) if candidate.is_evidence]
+        if not evidence:
+            return Insufficient()
+        return Supported(passages=tuple(evidence[:MAX_PASSAGES]))
+
+    async def candidates(self, question: str) -> list[Candidate]:
+        """问题的全部候选小节（两路召回的并集），按 fused_order 排好，附带每一步的判断。
+
+        关键词模式下只有关键词这一路，每个候选的 RRF 各不相同，顺序就是按覆盖率排的顺序。
+        """
         words = _question_words(question)
         if not words:
-            return Insufficient()
+            return []
+        query_vector = await self._embed_question(question)
 
         query = cast(_any_of(set(words) | {part for parts in words.values() for part in parts}), TSQUERY)
-        async with self._session_factory() as session:
-            candidates = (
+        similarity = (
+            null() if query_vector is None else 1 - KnowledgeChunk.embedding.cosine_distance(query_vector)
+        ).label("similarity")
+        columns = (KnowledgeChunk, func.tsvector_to_array(KnowledgeChunk.search_vector), similarity)
+
+        async with self._snapshot() as session:
+            if self._embedder is not None:
+                await self._check_index(session)
+            keyword_rows = (
                 await session.execute(
-                    select(KnowledgeChunk, func.tsvector_to_array(KnowledgeChunk.search_vector))
+                    select(*columns)
                     .where(KnowledgeChunk.search_vector.op("@@")(query))
                     .order_by(func.ts_rank(KnowledgeChunk.search_vector, query).desc(), KnowledgeChunk.id)
                     .limit(CANDIDATE_LIMIT)
                 )
             ).all()
-            if not candidates:
-                return Insufficient()
+            vector_rows = []
+            if query_vector is not None:
+                vector_rows = (
+                    await session.execute(
+                        select(*columns)
+                        .order_by(KnowledgeChunk.embedding.cosine_distance(query_vector), KnowledgeChunk.id)
+                        .limit(CANDIDATE_LIMIT)
+                    )
+                ).all()
             weights = await _word_weights(session, set(words))
 
         exact_words = {word for word in words if _EXACT_WORD.search(word)}
         total = sum(weights.values())
-        scored = []
-        for chunk, chunk_terms in candidates:
-            matched = _matched(words, set(chunk_terms))
+        judged: dict[int, tuple[KnowledgeChunk, float, bool, bool, float | None]] = {}
+        for chunk, terms, chunk_similarity in [*keyword_rows, *vector_rows]:
+            matched = _matched(words, set(terms))
             coverage = sum(weights[word] * share for word, share in matched.items()) / total
             exact_ok = all(matched[word] == 1 for word in exact_words)
             # 只靠文档标题命中（比如只问了商品名），说明不了这一节回答了所问的内容
             own_ok = any(_matched(words, _document_terms(f"{chunk.section}\n{chunk.content}")).values())
-            if exact_ok and own_ok and coverage >= MIN_COVERAGE:
-                scored.append((coverage, chunk))
-        if not scored:
-            return Insufficient()
+            keyword_ok = exact_ok and own_ok and coverage >= MIN_COVERAGE
+            judged[chunk.id] = (chunk, coverage, exact_ok, keyword_ok, chunk_similarity)
 
-        scored.sort(key=lambda item: (-item[0], item[1].id))
-        return Supported(passages=tuple(Passage.model_validate(chunk) for _, chunk in scored[:MAX_PASSAGES]))
+        # 关键词这一路按覆盖率排名次（和只有关键词检索时的顺序一样，覆盖率相同时按写入顺序），向量这一路按相似度
+        keyword_ids = sorted({row[0].id for row in keyword_rows}, key=lambda chunk_id: (-judged[chunk_id][1], chunk_id))
+        keyword_ranks = {chunk_id: rank for rank, chunk_id in enumerate(keyword_ids, start=1)}
+        vector_ranks = {row[0].id: rank for rank, row in enumerate(vector_rows, start=1)}
+
+        candidates = []
+        for chunk_id, (chunk, coverage, exact_ok, keyword_ok, chunk_similarity) in judged.items():
+            ranks = [rank for rank in (keyword_ranks.get(chunk_id), vector_ranks.get(chunk_id)) if rank is not None]
+            candidates.append(
+                Candidate(
+                    passage=Passage.model_validate(chunk),
+                    keyword_rank=keyword_ranks.get(chunk_id),
+                    coverage=coverage,
+                    keyword_ok=keyword_ok,
+                    vector_rank=vector_ranks.get(chunk_id),
+                    similarity=chunk_similarity,
+                    exact_ok=exact_ok,
+                    rrf=sum(1 / (RRF_K + rank) for rank in ranks),
+                )
+            )
+        return fused_order(candidates)
+
+    @asynccontextmanager
+    async def _snapshot(self) -> AsyncIterator[AsyncSession]:
+        """一个 REPEATABLE READ 事务：签名核对、两路召回和词的权重读到的是同一版知识库，重建恰好发生在中间也不会混。"""
+        async with self._session_factory() as session:
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            yield session
+
+    async def _check_index(self, session: AsyncSession) -> None:
+        index = await session.get(KnowledgeIndex, 1)
+        if index is None or index.embedding_signature != self._signature:
+            built = (
+                "还没有记录建库方式"
+                if index is None
+                else f"是按 {index.mode} 模式重建的（向量签名 {index.embedding_signature}）"
+            )
+            raise RuntimeError(
+                f"知识库{built}，和当前的向量模型（签名 {self._signature}）对不上。"
+                "请在 RETRIEVAL_MODE=hybrid 下重新运行 uv run python -m scripts.load_knowledge"
+            )
+
+    async def _embed_question(self, question: str) -> list[float] | None:
+        """混合模式下算出问题的向量；关键词模式下不算。问题超过长度上限时报业务错误，不截断。"""
+        if self._embedder is None:
+            return None
+        try:
+            # 编码是 CPU 密集的同步计算，放到线程里做，不阻塞事件循环
+            [vector] = await asyncio.to_thread(self._embedder.embed, [question])
+        except TextTooLongError as error:
+            raise QuestionTooLongError(
+                f"问题太长（{error.tokens} 个 token，上限 {error.limit}），请精简后再查"
+            ) from error
+        return vector
 
     async def _embed_passages(self, passages: list[Passage], texts: list[str]) -> list[list[float] | None]:
         """关键词模式下不算向量；混合模式下一次算完全部小节，超长的小节报出来源。"""

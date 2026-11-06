@@ -47,7 +47,10 @@ async def wait_until_listening(process: asyncio.subprocess.Process, port: int) -
 async def test_standalone_server_answers_over_real_http(
     test_settings: Settings, users: dict[str, User], add_product: AddProduct, add_order: AddOrder
 ) -> None:
-    """用和手动启动完全相同的命令启动独立进程，再通过真实网络连接它。"""
+    """用和手动启动完全相同的命令启动独立进程，再通过真实网络连接它。
+
+    和测试结果有关的配置都通过环境变量固定下来（会覆盖 .env）：.env 里开了混合检索，这里也不去加载真实模型。
+    """
     earbuds = await add_product("SoundPods 降噪耳机")
     order = await add_order(users["alice"].id, earbuds, status="shipped")
     port = free_port()
@@ -58,6 +61,7 @@ async def test_standalone_server_answers_over_real_http(
         "JWT_SECRET": settings.jwt_secret.get_secret_value(),
         "MCP_TOKEN_SECRET": settings.mcp_token_secret.get_secret_value(),
         "MCP_SERVER_URL": settings.mcp_server_url,
+        "RETRIEVAL_MODE": settings.retrieval_mode,
     }
     command = [sys.executable, "-m", "uvicorn", "app.mcp_server.main:create_mcp_app", "--factory"]
     process = await asyncio.create_subprocess_exec(

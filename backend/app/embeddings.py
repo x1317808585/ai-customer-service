@@ -52,6 +52,8 @@ class BgeM3Embedder:
         self.signature = (
             f"bge-m3:{_fingerprint(model_dir)};dim={EMBEDDING_DIMENSION};normalized;max_tokens={MAX_TOKENS}"
         )
+        # 第一次编码要做一些初始化，放在加载时做掉，第一个顾客的查询不会偏慢
+        self._model.encode(["预热"], show_progress_bar=False)
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         for index, text in enumerate(texts):

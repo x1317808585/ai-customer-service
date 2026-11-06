@@ -30,7 +30,7 @@ SYSTEM_ERROR_MESSAGE = "系统暂时出错，请稍后再试"
 
 
 class KnowledgeEvidence(BaseModel):
-    """知识库检索的结果。supported：passages 是 1～3 段能回答问题的原文；insufficient：没有找到依据。"""
+    """知识库检索的结果。supported：passages 是能回答问题的原文（目前一段）；insufficient：没有找到依据。"""
 
     status: Literal["supported", "insufficient"]
     passages: list[Passage]
@@ -60,13 +60,17 @@ def hide_system_errors[**P, R](tool: Callable[P, Awaitable[R]]) -> Callable[P, A
     return wrapper
 
 
-def register_read_tools(mcp: FastMCP, session_factory: async_sessionmaker[AsyncSession]) -> None:
-    """注册只读工具（包括只演练、不提交的预览工具）。金额字段的单位都是分（59900 表示 599.00 元）。"""
+def register_read_tools(
+    mcp: FastMCP, session_factory: async_sessionmaker[AsyncSession], knowledge: KnowledgeBase
+) -> None:
+    """注册只读工具（包括只演练、不提交的预览工具）。金额字段的单位都是分（59900 表示 599.00 元）。
+
+    知识库由调用方创建：混合检索模式下，它带着已经加载好的向量模型。
+    """
     catalog = Catalog(session_factory)
     orders = Orders(session_factory)
     returns = Returns(session_factory)
     tickets = Tickets(session_factory)
-    knowledge = KnowledgeBase(session_factory)
 
     @mcp.tool(annotations=READ_ONLY)
     @hide_system_errors
