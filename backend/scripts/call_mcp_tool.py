@@ -1,7 +1,7 @@
 """开发调试工具：以某个用户的身份调用 MCP 工具，看看 Agent 能拿到什么数据。要先启动 MCP Server。
 
 它直接用本机 .env 里的 MCP_TOKEN_SECRET 签发令牌，不经过登录，只能在开发环境使用。
-正式流程（9B）里，后端只给已经登录并通过校验的用户签发令牌。
+正式流程里，后端只给已经登录并通过校验的用户签发令牌。
 
 用法（在 backend 目录下）：
     uv run python -m scripts.call_mcp_tool alice                                列出所有工具
