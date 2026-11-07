@@ -35,7 +35,7 @@
 ### 1. 克隆并配置
 
 ```powershell
-git clone <仓库地址>
+git clone https://github.com/x1317808585/ai-customer-service.git
 cd ai-customer-service
 Copy-Item .env.example .env
 ```
